@@ -1,7 +1,7 @@
 {
   "$schema": "https://code.claude.com/schemas/plugin.json",
   "name": "terraform-skill",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Comprehensive Terraform and OpenTofu best practices skill covering testing, modules, CI/CD, and production patterns.",
   "author": {
     "name": "Anton Babenko",
