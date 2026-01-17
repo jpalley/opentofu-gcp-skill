@@ -90,29 +90,95 @@ jobs:
             echo "✅ Size OK"
           fi
 
-      - name: Validate plugin.json
+      - name: Validate marketplace.json
         run: |
           python3 << 'EOF'
           import json
           import sys
           import re
 
-          with open('.claude-plugin/plugin.json', 'r') as f:
-              plugin = json.load(f)
+          print("🔍 Validating marketplace.json...")
 
-          required = ['name', 'version', 'description', 'author', 'license']
-          missing = [f for f in required if f not in plugin]
+          with open('.claude-plugin/marketplace.json', 'r') as f:
+              marketplace = json.load(f)
+
+          # Validate marketplace-level fields
+          required_marketplace = ['name', 'owner', 'version', 'plugins']
+          missing = [f for f in required_marketplace if f not in marketplace]
 
           if missing:
-              print(f"❌ ERROR: Missing fields: {missing}")
+              print(f"❌ ERROR: Missing marketplace fields: {missing}")
               sys.exit(1)
 
-          version = plugin['version']
+          # Validate owner structure
+          if 'name' not in marketplace['owner'] or 'email' not in marketplace['owner']:
+              print("❌ ERROR: owner must have 'name' and 'email'")
+              sys.exit(1)
+
+          # Validate version format
+          version = marketplace['version']
           if not re.match(r'^\d+\.\d+\.\d+$', version):
-              print(f"❌ ERROR: Invalid version: {version}")
+              print(f"❌ ERROR: Invalid marketplace version: {version}")
               sys.exit(1)
 
-          print(f"✅ plugin.json valid (v{version})")
+          # Validate plugins array
+          if not isinstance(marketplace['plugins'], list) or len(marketplace['plugins']) == 0:
+              print("❌ ERROR: 'plugins' must be a non-empty array")
+              sys.exit(1)
+
+          # Validate each plugin
+          for idx, plugin in enumerate(marketplace['plugins']):
+              required_plugin = ['name', 'version', 'description', 'source']
+              missing = [f for f in required_plugin if f not in plugin]
+
+              if missing:
+                  print(f"❌ ERROR: Plugin {idx} missing fields: {missing}")
+                  sys.exit(1)
+
+              # Validate plugin version
+              plugin_version = plugin['version']
+              if not re.match(r'^\d+\.\d+\.\d+$', plugin_version):
+                  print(f"❌ ERROR: Invalid plugin version: {plugin_version}")
+                  sys.exit(1)
+
+              # Validate source structure
+              source = plugin['source']
+              if 'type' not in source:
+                  print(f"❌ ERROR: Plugin {idx} source missing 'type'")
+                  sys.exit(1)
+
+              source_type = source['type']
+
+              if source_type == 'github':
+                  if 'repo' not in source or 'ref' not in source:
+                      print(f"❌ ERROR: GitHub source must have 'repo' and 'ref'")
+                      sys.exit(1)
+
+                  # Validate repo format (owner/repo)
+                  if not re.match(r'^[^/]+/[^/]+$', source['repo']):
+                      print(f"❌ ERROR: Invalid repo format: {source['repo']}")
+                      sys.exit(1)
+
+              elif source_type == 'local':
+                  if 'path' not in source:
+                      print(f"❌ ERROR: Local source must have 'path'")
+                      sys.exit(1)
+
+              else:
+                  print(f"❌ ERROR: Unsupported source type: {source_type}")
+                  sys.exit(1)
+
+              # Validate version sync
+              if plugin_version != version:
+                  print(f"⚠️  WARNING: Plugin version {plugin_version} != marketplace version {version}")
+
+              # Validate ref sync (if github source)
+              if source_type == 'github':
+                  expected_ref = f"v{version}"
+                  if source['ref'] != expected_ref:
+                      print(f"⚠️  WARNING: Source ref {source['ref']} != expected {expected_ref}")
+
+          print(f"✅ marketplace.json valid (v{version}, {len(marketplace['plugins'])} plugin(s))")
           EOF
 
       - name: Check for Broken Links

@@ -17,7 +17,7 @@ This repository contains a **Claude Code skill** - executable documentation that
 ```
 terraform-skill/
 ├── .claude-plugin/
-│   └── plugin.json                       # Plugin metadata
+│   └── marketplace.json                  # Marketplace and plugin metadata
 ├── SKILL.md                              # Core skill file (~320 lines)
 ├── references/                               # Reference files (progressive disclosure)
 │   ├── testing-frameworks.md             # Testing guides
@@ -34,7 +34,7 @@ terraform-skill/
 
 | File | Audience | Purpose |
 |------|----------|---------|
-| `.claude-plugin/plugin.json` | Claude Code | Plugin metadata for marketplace |
+| `.claude-plugin/marketplace.json` | Claude Code | Marketplace and plugin metadata |
 | `SKILL.md` | Claude Code | Core skill (~320 lines, ~3K tokens) |
 | `references/*.md` | Claude Code | Reference files loaded on demand |
 | `README.md` | End users | Installation, usage examples, what it covers |

@@ -301,7 +301,7 @@ Conventional commits enable:
 
 When you merge a PR, the release workflow analyzes all commits since the last release and:
 1. Calculates the appropriate version bump
-2. Updates version in plugin.json and SKILL.md
+2. Updates version in marketplace.json (marketplace, plugin, and git ref)
 3. Generates changelog entry
 4. Creates GitHub release
 
@@ -352,8 +352,7 @@ Releases are **fully automated** based on conventional commits:
 2. Automated workflow analyzes commits since last release
 3. Calculates version bump (major/minor/patch)
 4. Workflow updates version in:
-   - `.claude-plugin/plugin.json`
-   - `SKILL.md` version history
+   - `.claude-plugin/marketplace.json` (marketplace version, plugin version, git ref)
    - `CHANGELOG.md` (generated from commits)
 5. Creates git tag and GitHub Release
 

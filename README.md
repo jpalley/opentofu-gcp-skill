@@ -37,7 +37,7 @@ Comprehensive Terraform and OpenTofu best practices skill for Claude Code. Get i
 
 ## Installation
 
-This plugin includes structured metadata (`.claude-plugin/plugin.json`) for Claude Code marketplace compatibility.
+This plugin is distributed via Claude Code marketplace using `.claude-plugin/marketplace.json`.
 
 ### Claude Code (Recommended)
 
