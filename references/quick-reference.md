@@ -350,6 +350,214 @@ tests/
 
 ---
 
+## Pre-Commit Checklist
+
+### Formatting & Validation
+
+Run these commands before every commit:
+
+```bash
+# Format all Terraform files
+terraform fmt -recursive
+
+# Validate configuration
+terraform validate
+```
+
+### Naming Convention Review
+
+- [ ] All identifiers use `_` not `-`
+- [ ] No resource names repeat resource type (no `aws_vpc.main_vpc`)
+- [ ] Single-instance resources named `this` or descriptive name
+- [ ] Variables have plural names for lists/maps (`subnet_ids` not `subnet_id`)
+- [ ] All variables have descriptions
+- [ ] All outputs have descriptions
+- [ ] Output names follow `{name}_{type}_{attribute}` pattern
+- [ ] No double negatives in variable names
+
+### Code Structure Review
+
+- [ ] `count`/`for_each` at top of resource blocks (blank line after)
+- [ ] `tags` as last real argument in resources
+- [ ] `depends_on` after tags (if used)
+- [ ] `lifecycle` at end of resource (if used)
+- [ ] Variables ordered: description → type → default → sensitive → nullable → validation
+- [ ] Only `#` comments used (no `//` or `/* */`)
+
+### Modern Features Check
+
+- [ ] Using `try()` not `element(concat())`
+- [ ] Secrets use write-only arguments or external data sources (not in state)
+- [ ] `nullable = false` set on non-null variables
+- [ ] `optional()` used in object types where applicable (Terraform 1.3+)
+- [ ] Variable validation blocks added where constraints needed
+- [ ] Consider cross-variable validation for related variables (Terraform 1.9+)
+
+### Architecture Review
+
+- [ ] `terraform.tfvars` only at composition level (not in modules)
+- [ ] Remote state configured (never local state)
+- [ ] Resource modules don't hardcode values (use variables/data sources)
+- [ ] `terraform_remote_state` used for cross-composition dependencies
+- [ ] File structure follows standard: main.tf, variables.tf, outputs.tf, versions.tf
+
+### Documentation Check
+
+Required documentation for all modules:
+
+- [ ] **README.md exists** with absolute links (Terraform Registry compatibility)
+- [ ] **All variables documented** in README with descriptions and types
+- [ ] **All outputs documented** in README with descriptions
+- [ ] **Usage examples provided** showing how to use the module
+- [ ] **Version requirements specified** (Terraform version, provider versions)
+
+---
+
+## Version Management Quick Reference
+
+### Constraint Syntax
+
+| Syntax | Meaning | Use Case |
+|--------|---------|----------|
+| `"5.0.0"` | Exact version | Avoid (inflexible) |
+| `"~> 5.0"` | Pessimistic (5.0.x) | Recommended for stability |
+| `"~> 5.0.1"` | Pessimistic (5.0.x where x >= 1) | Specific patch minimum |
+| `">= 5.0, < 6.0"` | Range | Any 5.x version |
+| `">= 5.0"` | Minimum | Risky (breaking changes) |
+
+### Strategy by Component
+
+| Component | Recommendation | Example |
+|-----------|----------------|---------|
+| **Terraform** | Pin minor, allow patch | `required_version = "~> 1.9"` |
+| **Providers** | Pin major, allow minor/patch | `version = "~> 5.0"` |
+| **Modules (prod)** | Pin exact version | `version = "5.1.2"` |
+| **Modules (dev)** | Allow patch updates | `version = "~> 5.1"` |
+
+### Update Workflow
+
+```bash
+# Step 1: Lock versions initially
+terraform init              # Creates .terraform.lock.hcl
+
+# Step 2: Update to latest within constraints
+terraform init -upgrade     # Updates providers
+
+# Step 3: Review changes
+terraform plan
+
+# Step 4: Commit lock file
+git add .terraform.lock.hcl
+git commit -m "Update provider versions"
+```
+
+### Update Strategy
+
+**Security patches:**
+- Update immediately
+- Test: dev → stage → prod
+- Prioritize Terraform core and provider updates
+
+**Minor versions:**
+- Regular maintenance (monthly/quarterly)
+- Review changelog for breaking changes
+- Test thoroughly before production
+
+**Major versions:**
+- Planned upgrade cycles
+- Dedicated testing period
+- May require code changes
+- Phased rollout: dev → stage → prod
+
+---
+
+## Refactoring Quick Reference
+
+### Common Refactoring Patterns
+
+#### Pattern 1: Count to For_Each Migration
+
+**When:** Need stable resource addressing or items might be reordered
+
+```bash
+# Step 1: Add for_each, keep count commented
+# Step 2: Add moved blocks for each resource
+# Step 3: Run terraform plan (should show "moved" not "destroy/create")
+# Step 4: Apply changes
+# Step 5: Remove commented count
+```
+
+**Key principle:** Use `moved` blocks to preserve existing resources
+
+#### Pattern 2: Legacy to Modern Terraform
+
+**0.12/0.13 → 1.x checklist:**
+
+- [ ] Replace `element(concat(...))` → `try()`
+- [ ] Add `nullable = false` where appropriate
+- [ ] Use `optional()` in object types (1.3+)
+- [ ] Add `validation` blocks
+- [ ] Migrate secrets to write-only arguments (1.11+)
+- [ ] Use `moved` blocks for refactoring (1.1+)
+- [ ] Add cross-variable validation (1.9+)
+
+#### Pattern 3: Secrets Remediation
+
+**Goal:** Move secrets out of Terraform state
+
+```bash
+# Step 1: Create secret in AWS Secrets Manager (outside Terraform)
+aws secretsmanager create-secret --name prod-db-password --secret-string "..."
+
+# Step 2: Update Terraform to use data sources
+# Step 3: Use write-only argument (Terraform 1.11+)
+# Step 4: Remove random_password resource or variable
+# Step 5: Apply and verify secret not in state
+terraform show | grep -i password  # Should not appear
+```
+
+### Refactoring Decision Tree
+
+```
+What are you refactoring?
+
+├─ Resource addressing (count[0] → for_each["key"])
+│  └─ Use: moved blocks + for_each conversion
+│
+├─ Secrets in state
+│  └─ Use: AWS Secrets Manager + write-only arguments (1.11+)
+│
+├─ Legacy Terraform syntax (0.12/0.13)
+│  └─ Use: Modern feature checklist above
+│
+└─ Module structure (rename, reorganize)
+   └─ Use: moved blocks to preserve resources
+```
+
+### Migration Best Practices
+
+**Before refactoring:**
+1. Backup state file
+2. Test in development first
+3. Review terraform plan carefully
+4. Document what changed and why
+
+**During refactoring:**
+1. One change at a time
+2. Verify each step with terraform plan
+3. Use moved blocks, not destroy/recreate
+4. Keep git history clean with logical commits
+
+**After refactoring:**
+1. Verify idempotency (plan shows no changes)
+2. Test in staging before production
+3. Update documentation
+4. Communicate changes to team
+
+**For detailed refactoring patterns, see:** [Code Patterns: Refactoring Patterns](code-patterns.md#refactoring-patterns)
+
+---
+
 ## Common Patterns
 
 ### Resource Naming

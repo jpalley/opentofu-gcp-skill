@@ -9,11 +9,350 @@ This document provides detailed guidance on creating reusable, maintainable Terr
 
 ## Table of Contents
 
-1. [Module Structure](#module-structure)
-2. [Variable Best Practices](#variable-best-practices)
-3. [Output Best Practices](#output-best-practices)
-4. [Common Patterns](#common-patterns)
-5. [Anti-patterns to Avoid](#anti-patterns-to-avoid)
+1. [Module Hierarchy](#module-hierarchy)
+2. [Architecture Principles](#architecture-principles)
+3. [Module Structure](#module-structure)
+4. [Variable Best Practices](#variable-best-practices)
+5. [Output Best Practices](#output-best-practices)
+6. [Common Patterns](#common-patterns)
+7. [Anti-patterns to Avoid](#anti-patterns-to-avoid)
+8. [Testing Philosophy & Patterns](#testing-philosophy--patterns)
+
+---
+
+## Module Hierarchy
+
+### Module Type Classification
+
+Terraform modules can be organized into three distinct types, each serving a specific purpose:
+
+| Type | When to Use | Scope | Example |
+|------|-------------|-------|---------|
+| **Resource Module** | Single logical group of connected resources | Tightly coupled resources that always work together | VPC + subnets, Security group + rules, IAM role + policies |
+| **Infrastructure Module** | Collection of resource modules for a purpose | Multiple resource modules in one region/account | Complete networking stack, Application infrastructure |
+| **Composition** | Complete infrastructure | Spans multiple regions/accounts, orchestrates infrastructure modules | Multi-region deployment, Production environment |
+
+**Hierarchy:** Resource → Resource Module → Infrastructure Module → Composition
+
+### Resource Module
+
+**Characteristics:**
+- Smallest building block
+- Single logical group of resources
+- Highly reusable across projects
+- Minimal external dependencies
+- Clear, focused purpose
+
+**Examples:**
+```
+modules/
+├── vpc/                    # Resource module
+│   ├── main.tf            # VPC + subnets + route tables
+│   ├── variables.tf
+│   └── outputs.tf
+├── security-group/         # Resource module
+│   ├── main.tf            # Security group + rules
+│   ├── variables.tf
+│   └── outputs.tf
+└── rds/                    # Resource module
+    ├── main.tf            # RDS instance + subnet group
+    ├── variables.tf
+    └── outputs.tf
+```
+
+### Infrastructure Module
+
+**Characteristics:**
+- Combines multiple resource modules
+- Purpose-specific (e.g., "web application infrastructure")
+- May span multiple services
+- Region or account-specific
+- Moderate reusability
+
+**Examples:**
+```
+modules/
+└── web-application/        # Infrastructure module
+    ├── main.tf            # Orchestrates multiple resource modules
+    ├── variables.tf
+    ├── outputs.tf
+    └── README.md
+
+# main.tf contents:
+module "vpc" {
+  source = "../vpc"
+}
+
+module "alb" {
+  source = "../alb"
+  vpc_id = module.vpc.vpc_id
+}
+
+module "ecs" {
+  source = "../ecs"
+  vpc_id = module.vpc.vpc_id
+  subnets = module.vpc.private_subnet_ids
+}
+```
+
+### Composition
+
+**Characteristics:**
+- Highest level of abstraction
+- Complete environment or application
+- Combines infrastructure modules
+- Environment-specific (dev, staging, prod)
+- Not reusable (environment-specific values)
+
+**Examples:**
+```
+environments/
+├── prod/                   # Composition
+│   ├── main.tf            # Complete production environment
+│   ├── backend.tf         # Remote state configuration
+│   ├── terraform.tfvars   # Production-specific values
+│   └── variables.tf
+├── staging/                # Composition
+│   ├── main.tf
+│   ├── backend.tf
+│   ├── terraform.tfvars
+│   └── variables.tf
+└── dev/                    # Composition
+    ├── main.tf
+    ├── backend.tf
+    ├── terraform.tfvars
+    └── variables.tf
+```
+
+### Decision Tree: Which Module Type?
+
+```
+Question 1: Is this environment-specific configuration?
+├─ YES → Composition (environments/prod/, environments/staging/)
+└─ NO  → Continue
+
+Question 2: Does it combine multiple infrastructure concerns?
+├─ YES → Infrastructure Module (modules/web-application/)
+└─ NO  → Continue
+
+Question 3: Is it a focused group of related resources?
+└─ YES → Resource Module (modules/vpc/, modules/rds/)
+```
+
+### File Organization Standards
+
+**Required files in all modules:**
+```
+main.tf        # Resource definitions, module calls, data sources
+variables.tf   # Input variable declarations
+outputs.tf     # Output value declarations
+versions.tf    # Provider and Terraform version constraints
+README.md      # Usage documentation
+```
+
+**Conditional files:**
+```
+terraform.tfvars  # ONLY at composition level (NEVER in modules)
+locals.tf         # For complex local value calculations
+data.tf           # Optional: Data sources (if main.tf gets large)
+backend.tf        # ONLY at composition level (remote state config)
+```
+
+**Why separate files?**
+- **Consistency:** Same structure across all modules
+- **Discoverability:** Know where to find specific types of configuration
+- **Maintainability:** Easier to navigate and modify
+- **Terraform Registry:** Required structure for publishing
+
+---
+
+## Architecture Principles
+
+### 1. Smaller Scopes = Better Performance + Reduced Blast Radius
+
+**Benefits:**
+- Faster `terraform plan` and `terraform apply` operations
+- Isolated failures don't affect unrelated infrastructure
+- Easier to reason about changes
+- Parallel development by multiple teams
+
+**Example:**
+
+```hcl
+# ❌ BAD - One massive composition with everything
+environments/prod/
+  main.tf  # 2000 lines, manages VPC, EC2, RDS, S3, IAM, everything
+  # Takes 10+ minutes to plan
+  # One mistake affects entire infrastructure
+
+# ✅ GOOD - Separated by concern
+environments/prod/
+  networking/     # VPC, subnets, route tables
+  compute/        # EC2, ASG, ALB
+  data/           # RDS, ElastiCache
+  storage/        # S3, EFS
+  iam/            # IAM roles, policies
+```
+
+### 2. Always Use Remote State
+
+**Why:**
+- **Prevents race conditions** with multiple developers
+- **Provides disaster recovery** (state versioning)
+- **Enables team collaboration** (shared access)
+- **Supports state locking** (prevents concurrent modifications)
+
+**Never:**
+```hcl
+# ❌ BAD - Local state (default)
+# State stored in local terraform.tfstate file
+# Lost if computer crashes
+# Can't share with team
+```
+
+**Always:**
+```hcl
+# ✅ GOOD - Remote state
+terraform {
+  backend "s3" {
+    bucket         = "my-terraform-state"
+    key            = "prod/networking/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"  # State locking
+    encrypt        = true                # Encryption at rest
+  }
+}
+```
+
+### 3. Use terraform_remote_state as Glue
+
+**Pattern:** Connect compositions via remote state data sources
+
+**Why:**
+- Loose coupling between infrastructure components
+- Teams can work independently
+- Changes to one stack don't require rebuilding others
+- Outputs from one stack become inputs to another
+
+**Example:**
+
+```hcl
+# environments/prod/networking/outputs.tf
+output "vpc_id" {
+  description = "ID of the production VPC"
+  value       = aws_vpc.this.id
+}
+
+output "private_subnet_ids" {
+  description = "List of private subnet IDs"
+  value       = aws_subnet.private[*].id
+}
+
+# environments/prod/compute/main.tf
+data "terraform_remote_state" "networking" {
+  backend = "s3"
+  config = {
+    bucket = "my-terraform-state"
+    key    = "prod/networking/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+module "ec2" {
+  source = "../../modules/ec2"
+
+  vpc_id     = data.terraform_remote_state.networking.outputs.vpc_id
+  subnet_ids = data.terraform_remote_state.networking.outputs.private_subnet_ids
+}
+```
+
+**Best practices:**
+- Use remote state for cross-team dependencies
+- Document which outputs are consumed by other stacks
+- Version outputs (don't break downstream consumers)
+- Consider using data sources instead for provider-managed resources
+
+### 4. Keep Resource Modules Simple
+
+**Principles:**
+- Don't hardcode values
+- Use variables for all configurable parameters
+- Use data sources for external dependencies
+- Focus on single responsibility
+
+**Example:**
+
+```hcl
+# ❌ BAD - Hardcoded values in resource module
+resource "aws_instance" "web" {
+  ami           = "ami-0c55b159cbfafe1f0"  # Hardcoded
+  instance_type = "t3.large"               # Hardcoded
+  subnet_id     = "subnet-12345678"        # Hardcoded
+
+  tags = {
+    Environment = "production"             # Hardcoded
+  }
+}
+
+# ✅ GOOD - Parameterized resource module
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]  # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+}
+
+resource "aws_instance" "web" {
+  ami           = var.ami_id != "" ? var.ami_id : data.aws_ami.ubuntu.id
+  instance_type = var.instance_type
+  subnet_id     = var.subnet_id
+
+  tags = var.tags
+}
+```
+
+### 5. Composition Layer: Environment-Specific Values Only
+
+**Pattern:** Compositions provide concrete values, modules provide abstractions
+
+```hcl
+# ✅ GOOD - Composition with environment-specific values
+# environments/prod/main.tf
+
+module "vpc" {
+  source = "../../modules/vpc"
+
+  cidr_block           = "10.0.0.0/16"
+  availability_zones   = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  enable_nat_gateway   = true
+  single_nat_gateway   = false  # HA for production
+
+  tags = {
+    Environment = "production"
+    ManagedBy   = "Terraform"
+    CostCenter  = "engineering"
+  }
+}
+
+module "rds" {
+  source = "../../modules/rds"
+
+  instance_class       = "db.r5.xlarge"  # Production sizing
+  allocated_storage    = 500             # Production sizing
+  multi_az             = true            # HA for production
+  backup_retention     = 30              # Long retention for prod
+
+  vpc_id               = module.vpc.vpc_id
+  subnet_ids           = module.vpc.private_subnet_ids
+
+  tags = {
+    Environment = "production"
+  }
+}
+```
 
 ---
 
@@ -578,6 +917,209 @@ secrets/
 *.tfplan
 *.tfplan.json
 ```
+
+---
+
+## Testing Philosophy & Patterns
+
+### What to Test in Terraform Modules
+
+**Core testing areas:**
+- **Input validation** - Variables accept valid values and reject invalid ones
+- **Resource creation** - Resources are created as expected with correct attributes
+- **Output correctness** - Outputs return expected values and types
+- **Idempotency** - Applying twice doesn't recreate resources
+- **Destroy completeness** - All resources are cleaned up properly
+
+**When to write tests:**
+- During development for reusable modules
+- Before publishing modules to registry
+- After significant refactoring
+- For modules with complex logic or conditionals
+
+### Testing Layers
+
+**1. Syntax validation:**
+```bash
+terraform fmt -check -recursive
+```
+
+**2. Configuration validity:**
+```bash
+terraform validate
+```
+
+**3. Plan preview:**
+```bash
+terraform plan
+# Review: Are expected resources being created?
+# Verify: Count and types of resources match expectations
+```
+
+**4. Integration testing:**
+```bash
+# Apply and verify
+terraform apply -auto-approve
+
+# Verify resources exist (use AWS CLI, etc.)
+aws ec2 describe-vpcs --vpc-ids $(terraform output -raw vpc_id)
+
+# Test idempotency - should show no changes
+terraform plan
+# Expected: "No changes. Your infrastructure matches the configuration."
+
+# Clean up
+terraform destroy -auto-approve
+```
+
+### Input Validation Testing
+
+Test that variables reject invalid values:
+
+```hcl
+# In variables.tf
+variable "environment" {
+  description = "Environment name"
+  type        = string
+
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "Environment must be one of: dev, staging, prod."
+  }
+}
+
+# Test: terraform plan with invalid value should fail
+# terraform plan -var="environment=invalid"
+# Expected: Error message about validation failure
+```
+
+### Output Verification Testing
+
+After apply, verify outputs contain expected values:
+
+```bash
+# Verify output is not empty
+VPC_ID=$(terraform output -raw vpc_id)
+[ -z "$VPC_ID" ] && echo "ERROR: VPC ID is empty" || echo "OK: VPC ID is $VPC_ID"
+
+# Verify output format
+SUBNET_IDS=$(terraform output -json subnet_ids)
+echo $SUBNET_IDS | jq 'length'  # Should match expected subnet count
+```
+
+### Idempotency Testing
+
+**Critical test** - ensures Terraform doesn't recreate resources unnecessarily:
+
+```bash
+# Apply configuration
+terraform apply -auto-approve
+
+# Immediately run plan - should show no changes
+terraform plan -detailed-exitcode
+# Exit code 0 = no changes (idempotent) ✓
+# Exit code 2 = changes detected (not idempotent) ✗
+```
+
+**Why idempotency matters:**
+- Proves configuration is stable
+- No resource churn on repeated applies
+- Safe to run in CI/CD pipelines
+- Indicates proper use of computed values
+
+### Destroy Testing
+
+Verify all resources are properly cleaned up:
+
+```bash
+# Before destroy - count resources
+BEFORE_COUNT=$(terraform state list | wc -l)
+
+# Destroy
+terraform destroy -auto-approve
+
+# After destroy - verify state is empty
+AFTER_COUNT=$(terraform state list | wc -l)
+[ "$AFTER_COUNT" -eq 0 ] && echo "OK: All resources destroyed" || echo "ERROR: Resources remain"
+```
+
+### Testing Anti-patterns
+
+**❌ Don't:**
+- Skip idempotency testing (most important test)
+- Test only happy paths (test validation failures too)
+- Forget to clean up test resources
+- Run expensive integration tests on every commit
+- Test Terraform syntax (terraform validate does this)
+
+**✅ Do:**
+- Test that validation blocks reject invalid input
+- Verify outputs have expected types and formats
+- Test conditional resource creation (count/for_each)
+- Document expected resource counts in tests
+- Use mocking for unit tests (Terraform 1.7+)
+- Run integration tests only on main branch or scheduled
+
+### Testing Strategy by Module Type
+
+**Resource modules:**
+- Focus on input validation
+- Test resource creation with minimal config
+- Verify outputs are correct
+- Test idempotency
+
+**Infrastructure modules:**
+- Test module composition works
+- Verify cross-module dependencies
+- Test with different configurations
+- Integration tests in test account
+
+**Compositions:**
+- Smoke tests (can it plan?)
+- Test with production-like values
+- Verify remote state connectivity
+- Manual QA in lower environments first
+
+### Cost Control for Testing
+
+**Strategies:**
+
+1. **Use mocking for unit tests** (Terraform 1.7+)
+   ```hcl
+   mock_provider "aws" {
+     mock_data "aws_ami" {
+       defaults = {
+         id = "ami-12345678"
+       }
+     }
+   }
+   ```
+
+2. **Tag test resources for tracking**
+   ```hcl
+   tags = {
+     Environment = "test"
+     TTL         = "2h"
+     ManagedBy   = "terraform-test"
+   }
+   ```
+
+3. **Run integration tests only on main branch**
+   ```yaml
+   if: github.ref == 'refs/heads/main'
+   ```
+
+4. **Use smaller instance types**
+   ```hcl
+   instance_type = var.environment == "test" ? "t3.micro" : var.instance_type
+   ```
+
+5. **Implement auto-cleanup**
+   - Use AWS Lambda to delete resources with expired TTL tags
+   - Run destroy in CI/CD after tests complete
+   - Use terraform-compliance to enforce TTL tags
+
+**For testing framework details, see:** [Testing Frameworks Guide](testing-frameworks.md)
 
 ---
 
