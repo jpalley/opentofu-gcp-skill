@@ -1,4 +1,9 @@
-## [2.0.1](https://github.com/antonbabenko/terraform-skill/compare/v2.0.0...v2.0.1) (2026-01-17)
+# [0.1.0](https://github.com/antonbabenko/terraform-skill/compare/v2.0.0...v0.1.0) (2026-01-18)
+
+
+### Bug Fixes
+
+* **claude-plugin:** Update marketplace.json version and source structure ([2bca71c](https://github.com/antonbabenko/terraform-skill/commit/2bca71c90817c9b29da161fd4339d2acf4abdaeb))
 
 
 
