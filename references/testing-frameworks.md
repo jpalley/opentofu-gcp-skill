@@ -1,192 +1,308 @@
-# Testing Frameworks - Detailed Guide
+# Testing Frameworks Guide
 
-> **Part of:** [terraform-skill](../SKILL.md)
-> **Purpose:** Detailed guides for Terraform/OpenTofu testing frameworks
+> **Part of:** [opentofu-skill-gcp](../SKILL.md)
+> **Purpose:** Deep dive into testing approaches for OpenTofu/GCP
 
-This document provides in-depth guidance on testing frameworks for Infrastructure as Code. For the decision matrix and high-level overview, see the [main skill file](../SKILL.md#testing-strategy-framework).
+This document provides comprehensive testing strategies from static analysis to full integration testing with GCP resources.
 
 ---
 
 ## Table of Contents
 
-1. [Static Analysis](#static-analysis)
-2. [Plan Testing](#plan-testing)
-3. [Native Terraform Tests](#native-terraform-tests)
-4. [Terratest (Go-based)](#terratest-go-based)
+1. [Testing Pyramid](#testing-pyramid)
+2. [Static Analysis](#static-analysis)
+3. [Native Test Framework](#native-test-framework)
+4. [Terratest for GCP](#terratest-for-gcp)
+5. [Mock Providers](#mock-providers)
+6. [Cost Optimization](#cost-optimization)
+
+---
+
+## Testing Pyramid
+
+```
+        /\
+       /  \          End-to-End Tests (Expensive)
+      /____\         - Full environment deployment
+     /      \        - Production-like setup in GCP
+    /________\
+   /          \      Integration Tests (Moderate)
+  /____________\     - Module testing in isolation
+ /              \    - Real GCP resources in test project
+/________________\   Static Analysis (Cheap)
+                     - tofu validate, fmt, lint
+                     - trivy, checkov security scans
+```
+
+### Testing Strategy by Cost
+
+| Level | Tools | GCP Cost | When to Run |
+|-------|-------|----------|-------------|
+| Static | validate, fmt, tflint, trivy, checkov | Free | Every commit |
+| Unit (Mocked) | tofu test with mocks | Free | Every PR |
+| Integration | tofu test, Terratest | $ | Main branch |
+| End-to-End | Full deployment | $$ | Scheduled/Release |
 
 ---
 
 ## Static Analysis
 
-**Always do this first.** Zero cost, catches 40%+ of issues before deployment.
+### Format and Validate
 
-### Pre-commit Hooks
+```bash
+# Check formatting
+tofu fmt -check -recursive
 
-```yaml
-# In .pre-commit-config.yaml
-- repo: https://github.com/antonbabenko/pre-commit-terraform
-  hooks:
-    - id: terraform_fmt
-    - id: terraform_validate
-    - id: terraform_tflint
+# Validate configuration
+tofu validate
 ```
 
-### What Each Tool Checks
+### TFLint with GCP Plugin
 
-- **`terraform fmt`** - Code formatting consistency
-- **`terraform validate`** - Syntax and internal consistency
-- **`TFLint`** - Best practices, provider-specific rules
-- **`trivy` / `checkov`** - Security vulnerabilities
+```bash
+# Install tflint
+brew install tflint  # macOS
+# OR
+curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
 
-### When to Use
+# Initialize with GCP plugin
+tflint --init
 
-Every commit, always. Zero cost, catches 40%+ of issues.
+# Run with GCP rules
+tflint --enable-plugin=google
+```
+
+**.tflint.hcl configuration:**
+
+```hcl
+# .tflint.hcl
+plugin "google" {
+  enabled = true
+  version = "0.28.0"
+  source  = "github.com/terraform-linters/tflint-ruleset-google"
+}
+
+rule "google_compute_instance_invalid_machine_type" {
+  enabled = true
+}
+
+rule "google_container_cluster_node_version" {
+  enabled = true
+}
+```
+
+### Security Scanning
+
+```bash
+# Trivy - IaC misconfiguration
+trivy config . --severity CRITICAL,HIGH
+
+# Checkov - GCP policy compliance
+checkov -d . --framework terraform --check CKV_GCP*
+```
 
 ---
 
-## Plan Testing
+## Native Test Framework
 
-### What terraform plan Validates
+### Overview (OpenTofu 1.6+)
 
-- Verify expected resources will be created/modified/destroyed
-- Catch provider authentication issues
-- Validate variable combinations
-- Review before applying
+The native test framework provides built-in testing without external tools.
 
-### In CI/CD
+**File naming:** `*.tftest.hcl` or `tests/*.tftest.hcl`
 
-```bash
-terraform init
-terraform plan -out=tfplan
-
-# Optionally: Convert plan to JSON and validate with tools
-terraform show -json tfplan | jq '.'
-```
-
-### Limitations
-
-- Doesn't deploy real infrastructure
-- Can't catch runtime issues (IAM permissions, network connectivity)
-- Won't find resource-specific bugs
-
----
-
-## Native Terraform Tests
-
-**Available:** Terraform 1.6+, OpenTofu 1.6+
-
-### When to Use
-
-- Team primarily works in HCL (no Go/Ruby experience needed)
-- Testing logical operations and module behavior
-- Want to avoid external testing dependencies
-
-### Basic Structure
+### Basic Test Structure
 
 ```hcl
-# tests/s3_bucket.tftest.hcl
-run "create_bucket" {
-  command = apply
+# tests/vpc_test.tftest.hcl
 
-  assert {
-    condition     = aws_s3_bucket.main.bucket != ""
-    error_message = "S3 bucket name must be set"
-  }
+# Variables for tests
+variables {
+  project_id   = "test-project"
+  region       = "us-central1"
+  network_name = "test-vpc"
 }
 
-run "verify_encryption" {
+# Test: VPC creation with plan mode (fast, no resources created)
+run "vpc_creates_correctly" {
   command = plan
 
   assert {
-    condition     = aws_s3_bucket_server_side_encryption_configuration.main.rule[0].apply_server_side_encryption_by_default[0].sse_algorithm == "AES256"
-    error_message = "Bucket must use AES256 encryption"
+    condition     = google_compute_network.this.name == "test-vpc"
+    error_message = "VPC name should be 'test-vpc'"
   }
-}
-```
-
-### Critical: Validate Resource Schemas First
-
-**Always use Terraform MCP to validate resource schemas before writing tests:**
-
-```bash
-# Example workflow in Claude Code:
-# 1. Search for provider documentation
-mcp__terraform__search_providers({
-  provider_name: "aws",
-  provider_namespace: "hashicorp",
-  service_slug: "s3_bucket_server_side_encryption_configuration",
-  provider_document_type: "resources"
-})
-
-# 2. Get detailed schema
-mcp__terraform__get_provider_details({
-  provider_doc_id: "12345"  # from search results
-})
-```
-
-**Why This Matters:**
-- Some blocks are **sets** (unordered, no indexing with `[0]`)
-- Some blocks are **lists** (ordered, indexable)
-- Some attributes are **computed** (only known after apply)
-
-**Common Schema Patterns:**
-
-| AWS Resource | Block Type | Indexing |
-|--------------|------------|----------|
-| `rule` in `aws_s3_bucket_server_side_encryption_configuration` | **set** | ❌ Cannot use `[0]` |
-| `transition` in `aws_s3_bucket_lifecycle_configuration` | **set** | ❌ Cannot use `[0]` |
-| `noncurrent_version_expiration` in lifecycle | **list** | ✅ Can use `[0]` |
-
-### Working with Set-Type Blocks
-
-**Problem:** Cannot index sets with `[0]`
-```hcl
-# ❌ WRONG: This will fail
-condition = aws_s3_bucket_server_side_encryption_configuration.this.rule[0].bucket_key_enabled == true
-# Error: Cannot index a set value
-```
-
-**Solution 1:** Use `command = apply` to materialize the set
-```hcl
-run "test_encryption" {
-  command = apply  # Creates real/mocked resources
 
   assert {
-    # Now the set is materialized and can be checked
-    condition     = length([for rule in aws_s3_bucket_server_side_encryption_configuration.this.rule :
-                             rule.bucket_key_enabled if rule.bucket_key_enabled == true]) > 0
-    error_message = "Bucket key should be enabled"
+    condition     = google_compute_network.this.auto_create_subnetworks == false
+    error_message = "Auto-create subnetworks should be disabled"
   }
+}
+
+# Test: Validation rules work
+run "invalid_region_fails" {
+  command = plan
+
+  variables {
+    region = "invalid-region"
+  }
+
+  expect_failures = [var.region]
 }
 ```
 
-**Solution 2:** Check at resource level (avoid accessing nested blocks)
+### Command Modes
+
+| Mode | Use Case | Creates Resources | Speed |
+|------|----------|-------------------|-------|
+| `command = plan` | Input validation, logic testing | No | Fast |
+| `command = apply` | Integration tests, computed values | Yes | Slow |
+
+### Testing with Mocks (OpenTofu 1.7+)
+
 ```hcl
-run "test_encryption_exists" {
+# tests/compute_test.tftest.hcl
+
+# Mock the Google provider
+mock_provider "google" {
+  mock_data "google_compute_zones" {
+    defaults = {
+      names = ["us-central1-a", "us-central1-b", "us-central1-c"]
+    }
+  }
+
+  mock_resource "google_compute_instance" {
+    defaults = {
+      id = "test-instance-id"
+    }
+  }
+}
+
+run "compute_instance_creates" {
   command = plan
 
   assert {
-    # Check that the resource exists without accessing set members
-    condition     = aws_s3_bucket_server_side_encryption_configuration.this != null
-    error_message = "Encryption configuration should be created"
+    condition     = google_compute_instance.web.machine_type == "e2-medium"
+    error_message = "Instance should use e2-medium"
   }
 }
 ```
 
-**Solution 3:** Use for expressions (works in apply mode)
+### Testing Modules
+
 ```hcl
-run "test_encryption_algorithm" {
-  command = apply
+# tests/module_test.tftest.hcl
+
+# Test the VPC module
+run "vpc_module_test" {
+  command = plan
+
+  module {
+    source = "./modules/vpc"
+  }
+
+  variables {
+    network_name = "test-vpc"
+    subnets = {
+      "private-us-central1" = {
+        cidr   = "10.0.1.0/24"
+        region = "us-central1"
+      }
+    }
+  }
 
   assert {
-    condition     = alltrue([
-      for rule in aws_s3_bucket_server_side_encryption_configuration.this.rule :
-      alltrue([
-        for config in rule.apply_server_side_encryption_by_default :
-        config.sse_algorithm == "AES256"
-      ])
-    ])
-    error_message = "Encryption should use AES256"
+    condition     = length(google_compute_subnetwork.this) == 1
+    error_message = "Should create 1 subnet"
+  }
+}
+```
+
+### GCP-Specific Test Patterns
+
+**Testing GKE Cluster:**
+
+```hcl
+# tests/gke_test.tftest.hcl
+
+variables {
+  project_id   = "test-project"
+  region       = "us-central1"
+  cluster_name = "test-cluster"
+}
+
+run "gke_cluster_is_private" {
+  command = plan
+
+  assert {
+    condition     = google_container_cluster.primary.private_cluster_config[0].enable_private_nodes == true
+    error_message = "GKE cluster must use private nodes"
+  }
+
+  assert {
+    condition     = google_container_cluster.primary.remove_default_node_pool == true
+    error_message = "Default node pool should be removed"
+  }
+}
+
+run "gke_has_required_labels" {
+  command = plan
+
+  assert {
+    condition     = google_container_cluster.primary.resource_labels["managed-by"] == "opentofu"
+    error_message = "Cluster must have managed-by label"
+  }
+}
+```
+
+**Testing Cloud SQL:**
+
+```hcl
+# tests/cloudsql_test.tftest.hcl
+
+run "cloudsql_is_private" {
+  command = plan
+
+  assert {
+    condition     = google_sql_database_instance.main.settings[0].ip_configuration[0].ipv4_enabled == false
+    error_message = "Cloud SQL must not have public IP"
+  }
+
+  assert {
+    condition     = google_sql_database_instance.main.settings[0].ip_configuration[0].private_network != null
+    error_message = "Cloud SQL must use private network"
+  }
+}
+
+run "cloudsql_has_backups" {
+  command = plan
+
+  assert {
+    condition     = google_sql_database_instance.main.settings[0].backup_configuration[0].enabled == true
+    error_message = "Backups must be enabled"
+  }
+}
+```
+
+**Testing Pub/Sub:**
+
+```hcl
+# tests/pubsub_test.tftest.hcl
+
+run "pubsub_has_labels" {
+  command = plan
+
+  assert {
+    condition     = google_pubsub_topic.events.labels["environment"] != null
+    error_message = "Topic must have environment label"
+  }
+}
+
+run "subscription_has_retention" {
+  command = plan
+
+  assert {
+    condition     = google_pubsub_subscription.events.message_retention_duration == "604800s"
+    error_message = "Subscription should retain messages for 7 days"
   }
 }
 ```
@@ -209,13 +325,13 @@ run "test_input_validation" {
   command = plan  # Fast, no resource creation
 
   variables {
-    bucket = "test-bucket"
+    network_name = "test-vpc"
   }
 
   assert {
-    # bucket name is an input, known at plan time
-    condition     = aws_s3_bucket.this.bucket == "test-bucket"
-    error_message = "Bucket name should match input"
+    # network name is an input, known at plan time
+    condition     = google_compute_network.this.name == "test-vpc"
+    error_message = "Network name should match input"
   }
 }
 ```
@@ -223,7 +339,7 @@ run "test_input_validation" {
 #### Use `command = apply`
 
 **When:**
-- Checking computed attributes (IDs, ARNs, generated names)
+- Checking computed attributes (IDs, self_links, generated names)
 - Accessing set-type blocks
 - Verifying actual resource behavior
 - Testing with real/mocked provider responses
@@ -234,329 +350,346 @@ run "test_computed_values" {
   command = apply  # Executes and gets computed values
 
   variables {
-    bucket_prefix = "test-"  # AWS generates full name
+    network_name = "test-vpc"
   }
 
   assert {
-    # bucket name is computed from prefix, only known after apply
-    condition     = length(aws_s3_bucket.this.bucket) > 0
-    error_message = "Bucket should have generated name"
-  }
-}
-```
-
-#### Common Pitfall: Checking Computed Values in Plan Mode
-
-**Problem:**
-```hcl
-run "test_bucket_prefix" {
-  command = plan  # ❌ WRONG MODE
-
-  variables {
-    bucket_prefix = "test-prefix-"
-  }
-
-  assert {
-    # bucket is computed from prefix, unknown at plan time!
-    condition     = aws_s3_bucket.this.bucket == null
-    error_message = "Bucket name should be null when using bucket_prefix"
-  }
-}
-# Error: Condition expression could not be evaluated at this time
-```
-
-**Solution:**
-```hcl
-run "test_bucket_prefix" {
-  command = apply  # ✅ CORRECT MODE or check differently
-
-  variables {
-    bucket_prefix = "test-prefix-"
-  }
-
-  assert {
-    # Now bucket has been generated by provider
-    condition     = startswith(aws_s3_bucket.this.bucket, "test-prefix-")
-    error_message = "Bucket name should start with prefix"
-  }
-}
-```
-
-**Quick Decision Guide:**
-```
-Checking input values? → command = plan
-Checking computed values? → command = apply
-Accessing set-type blocks? → command = apply
-Need fast feedback? → command = plan (with mocks)
-Testing real behavior? → command = apply (without mocks)
-```
-
-### With Mocking (1.7+)
-
-```hcl
-mock_provider "aws" {
-  mock_resource "aws_instance" {
-    defaults = {
-      id  = "i-mock123"
-      arn = "arn:aws:ec2:us-east-1:123456789:instance/i-mock123"
-    }
-  }
-}
-```
-
-### Pros
-
-- Native HCL syntax (familiar to Terraform users)
-- No external dependencies
-- Fast execution with mocks
-- Good for unit testing module logic
-
-### Cons
-
-- Newer feature (less mature than Terratest)
-- Limited ecosystem/examples
-- Mocking doesn't catch real-world AWS behavior
-
----
-
-### Complete Test Examples (Following Best Practices)
-
-#### Example 1: S3 Bucket Tests
-
-```hcl
-# tests/unit/s3_bucket.tftest.hcl
-
-mock_provider "aws" {}  # Zero cost with mocks
-
-# Test 1: Input validation (fast, plan mode)
-run "validate_bucket_name" {
-  command = plan
-
-  variables {
-    bucket = "my-test-bucket"
-  }
-
-  assert {
-    condition     = aws_s3_bucket.this.bucket == "my-test-bucket"
-    error_message = "Bucket name should match input"
-  }
-}
-
-# Test 2: Encryption defaults (apply mode for set access)
-run "verify_default_encryption" {
-  command = apply
-
-  variables {
-    bucket = "encrypted-bucket"
-  }
-
-  assert {
-    # Using for expression to check set-type block
-    condition = alltrue([
-      for rule in aws_s3_bucket_server_side_encryption_configuration.this.rule :
-      alltrue([
-        for config in rule.apply_server_side_encryption_by_default :
-        config.sse_algorithm == "AES256"
-      ])
-    ])
-    error_message = "Default encryption should be AES256"
-  }
-
-  assert {
-    # Check bucket key at rule level
-    condition = alltrue([
-      for rule in aws_s3_bucket_server_side_encryption_configuration.this.rule :
-      rule.bucket_key_enabled == true
-    ])
-    error_message = "Bucket key should be enabled"
-  }
-}
-
-# Test 3: Computed values (apply mode required)
-run "verify_generated_name" {
-  command = apply
-
-  variables {
-    bucket_prefix = "test-"
-  }
-
-  assert {
-    condition     = startswith(aws_s3_bucket.this.bucket, "test-")
-    error_message = "Generated bucket name should have prefix"
-  }
-
-  assert {
-    condition     = length(aws_s3_bucket.this.bucket) > 5
-    error_message = "Bucket name should be generated"
-  }
-}
-```
-
-#### Example 2: Lifecycle Rules
-
-```hcl
-# tests/unit/lifecycle.tftest.hcl
-
-mock_provider "aws" {}
-
-run "verify_lifecycle_transitions" {
-  command = apply  # Required for set-type transition blocks
-
-  variables {
-    bucket = "lifecycle-bucket"
-    lifecycle_rules = [{
-      id      = "archive"
-      enabled = true
-      transition = [
-        { days = 90, storage_class = "GLACIER" },
-        { days = 180, storage_class = "DEEP_ARCHIVE" }
-      ]
-    }]
-  }
-
-  assert {
-    # Check that both transitions exist using for expression
-    condition = length([
-      for rule in aws_s3_bucket_lifecycle_configuration.this[0].rule :
-      rule.id if rule.id == "archive"
-    ]) == 1
-    error_message = "Lifecycle rule should exist"
-  }
-
-  assert {
-    # Verify transition count using length
-    condition = alltrue([
-      for rule in aws_s3_bucket_lifecycle_configuration.this[0].rule :
-      length(rule.transition) == 2
-    ])
-    error_message = "Should have 2 transitions"
+    # self_link is computed, only known after apply
+    condition     = length(google_compute_network.this.self_link) > 0
+    error_message = "Network should have self_link"
   }
 }
 ```
 
 ---
 
-## Terratest (Go-based)
+## Terratest for GCP
 
-**Recommended for:** Teams with Go experience, robust integration testing
-
-### When to Use
-
-- Team has Go experience
-- Need robust integration testing
-- Testing multiple providers/complex infrastructure
-- Want battle-tested framework with large community
-
-### Basic Structure
+### Setup
 
 ```go
+// go.mod
+module github.com/myorg/infra-tests
+
+go 1.21
+
+require (
+    github.com/gruntwork-io/terratest v0.46.0
+    github.com/stretchr/testify v1.8.4
+    google.golang.org/api v0.150.0
+)
+```
+
+### Basic GCP Test
+
+```go
+// tests/vpc_test.go
 package test
 
 import (
+    "fmt"
     "testing"
+
+    "github.com/gruntwork-io/terratest/modules/gcp"
+    "github.com/gruntwork-io/terratest/modules/random"
     "github.com/gruntwork-io/terratest/modules/terraform"
     "github.com/stretchr/testify/assert"
 )
 
-func TestS3Module(t *testing.T) {
-    t.Parallel() // ALWAYS include for parallel execution
+func TestVPCModule(t *testing.T) {
+    t.Parallel()
 
-    terraformOptions := &terraform.Options{
-        TerraformDir: "../examples/complete",
+    projectID := gcp.GetGoogleProjectIDFromEnvVar(t)
+    region := "us-central1"
+    uniqueID := random.UniqueId()
+    networkName := fmt.Sprintf("test-vpc-%s", uniqueID)
+
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        TerraformDir: "../examples/simple",
         Vars: map[string]interface{}{
-            "bucket_name": "test-bucket-" + uniqueId(),
+            "project_id":   projectID,
+            "region":       region,
+            "network_name": networkName,
         },
-    }
+    })
 
-    // Clean up resources after test
     defer terraform.Destroy(t, terraformOptions)
-
-    // Run terraform init and apply
     terraform.InitAndApply(t, terraformOptions)
 
-    // Get outputs and verify
-    bucketName := terraform.Output(t, terraformOptions, "bucket_name")
-    assert.NotEmpty(t, bucketName)
+    // Get outputs
+    vpcID := terraform.Output(t, terraformOptions, "vpc_id")
+    vpcName := terraform.Output(t, terraformOptions, "vpc_name")
+
+    // Verify outputs
+    assert.NotEmpty(t, vpcID)
+    assert.Equal(t, networkName, vpcName)
+
+    // Verify VPC exists in GCP
+    network := gcp.GetNetwork(t, projectID, networkName)
+    assert.NotNil(t, network)
+    assert.False(t, network.AutoCreateSubnetworks)
 }
 ```
 
-### Cost Management
+### Testing GKE Cluster
 
 ```go
-// Use tags for automated cleanup
-Vars: map[string]interface{}{
-    "tags": map[string]string{
-        "Environment": "test",
-        "TTL":         "2h", // Auto-delete after 2 hours
-    },
+// tests/gke_test.go
+package test
+
+import (
+    "fmt"
+    "testing"
+    "time"
+
+    "github.com/gruntwork-io/terratest/modules/gcp"
+    "github.com/gruntwork-io/terratest/modules/k8s"
+    "github.com/gruntwork-io/terratest/modules/random"
+    "github.com/gruntwork-io/terratest/modules/terraform"
+    "github.com/stretchr/testify/assert"
+)
+
+func TestGKECluster(t *testing.T) {
+    t.Parallel()
+
+    projectID := gcp.GetGoogleProjectIDFromEnvVar(t)
+    region := "us-central1"
+    uniqueID := random.UniqueId()
+    clusterName := fmt.Sprintf("test-gke-%s", uniqueID)
+
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        TerraformDir: "../modules/gke",
+        Vars: map[string]interface{}{
+            "project_id":   projectID,
+            "region":       region,
+            "cluster_name": clusterName,
+            "environment":  "test",
+        },
+    })
+
+    defer terraform.Destroy(t, terraformOptions)
+    terraform.InitAndApply(t, terraformOptions)
+
+    // Get cluster endpoint
+    clusterEndpoint := terraform.Output(t, terraformOptions, "cluster_endpoint")
+    assert.NotEmpty(t, clusterEndpoint)
+
+    // Get kubeconfig
+    kubeconfig := terraform.Output(t, terraformOptions, "kubeconfig")
+
+    // Test cluster connectivity
+    kubectlOptions := k8s.NewKubectlOptions("", kubeconfig, "default")
+    k8s.WaitUntilAllNodesReady(t, kubectlOptions, 10, 30*time.Second)
+
+    // Verify nodes are running
+    nodes := k8s.GetNodes(t, kubectlOptions)
+    assert.GreaterOrEqual(t, len(nodes), 1)
 }
 ```
 
-### Critical Patterns
-
-1. **Always use `t.Parallel()`** - Enables parallel test execution
-2. **Always use `defer terraform.Destroy()`** - Ensures cleanup
-3. **Use unique identifiers** - Avoid resource conflicts
-4. **Tag resources** - Enable cost tracking and automated cleanup
-5. **Use separate AWS accounts** - Isolate test infrastructure
-
-### Real-world Costs
-
-- Small module (S3, IAM): $0-5 per run
-- Medium module (VPC, EC2): $5-20 per run
-- Large module (RDS, ECS cluster): $20-100 per run
-
-### Optimization with Test Stages
+### Testing Cloud SQL
 
 ```go
-// Test stages for faster iteration
-stage := test_structure.RunTestStage
+// tests/cloudsql_test.go
+package test
 
-stage(t, "setup", func() {
-    terraform.InitAndApply(t, opts)
-})
+import (
+    "fmt"
+    "testing"
 
-stage(t, "validate", func() {
-    // Assertions here
-})
+    "github.com/gruntwork-io/terratest/modules/gcp"
+    "github.com/gruntwork-io/terratest/modules/random"
+    "github.com/gruntwork-io/terratest/modules/terraform"
+    "github.com/stretchr/testify/assert"
+)
 
-stage(t, "teardown", func() {
-    terraform.Destroy(t, opts)
-})
+func TestCloudSQL(t *testing.T) {
+    t.Parallel()
 
-// Skip stages during development:
-// export SKIP_setup=true
-// export SKIP_teardown=true
+    projectID := gcp.GetGoogleProjectIDFromEnvVar(t)
+    region := "us-central1"
+    uniqueID := random.UniqueId()
+    instanceName := fmt.Sprintf("test-db-%s", uniqueID)
+
+    terraformOptions := terraform.WithDefaultRetryableErrors(t, &terraform.Options{
+        TerraformDir: "../modules/cloudsql",
+        Vars: map[string]interface{}{
+            "project_id":    projectID,
+            "region":        region,
+            "instance_name": instanceName,
+            "environment":   "test",
+        },
+    })
+
+    defer terraform.Destroy(t, terraformOptions)
+    terraform.InitAndApply(t, terraformOptions)
+
+    // Get connection info
+    connectionName := terraform.Output(t, terraformOptions, "connection_name")
+    assert.NotEmpty(t, connectionName)
+
+    // Verify instance exists and is RUNNABLE
+    instance := gcp.GetCloudSQLInstance(t, projectID, instanceName)
+    assert.Equal(t, "RUNNABLE", instance.State)
+}
 ```
 
 ---
 
-## Best Practices Summary
+## Mock Providers
 
-### For All Frameworks
+### When to Use Mocks (OpenTofu 1.7+)
 
-1. **Start with static analysis** - Always free, always fast
-2. **Use unique identifiers** - Prevent resource conflicts
-3. **Tag test resources** - Enable tracking and cleanup
-4. **Separate test accounts** - Isolate test infrastructure
-5. **Implement TTL** - Automatic resource cleanup
+| Scenario | Use Mocks? | Why |
+|----------|------------|-----|
+| Input validation | Yes | No cloud resources needed |
+| Logic testing | Yes | Testing conditionals, loops |
+| Computed values | No | Need real provider |
+| Integration tests | No | Testing real behavior |
+| Cost-sensitive CI | Yes | Reduce cloud spend |
 
-### Framework Selection
+### Mock Provider Example
+
+```hcl
+# tests/mocked_test.tftest.hcl
+
+mock_provider "google" {
+  # Mock zone data source
+  mock_data "google_compute_zones" {
+    defaults = {
+      names = ["us-central1-a", "us-central1-b", "us-central1-c"]
+    }
+  }
+
+  # Mock instance creation
+  mock_resource "google_compute_instance" {
+    defaults = {
+      id           = "projects/test/zones/us-central1-a/instances/test"
+      instance_id  = "1234567890"
+      self_link    = "https://compute.googleapis.com/..."
+    }
+  }
+
+  # Mock network
+  mock_resource "google_compute_network" {
+    defaults = {
+      id        = "projects/test/global/networks/test-vpc"
+      self_link = "https://compute.googleapis.com/..."
+    }
+  }
+}
+
+run "instance_uses_correct_zone" {
+  command = plan
+
+  assert {
+    condition     = google_compute_instance.web.zone == "us-central1-a"
+    error_message = "Instance should be in us-central1-a"
+  }
+}
+```
+
+---
+
+## Cost Optimization
+
+### Strategy Overview
+
+| Strategy | Savings | Implementation |
+|----------|---------|----------------|
+| Use mocks for unit tests | ~90% | OpenTofu 1.7+ mocks |
+| Smallest instance types | ~70% | e2-micro, db-f1-micro |
+| Run integration on main only | ~80% | CI/CD conditional |
+| TTL labels + cleanup | 100% of orphans | Scheduled cleanup job |
+
+### Implementing Cost Controls
+
+**1. Use test-specific machine types:**
+
+```hcl
+variable "environment" {
+  type = string
+}
+
+locals {
+  machine_types = {
+    test = "e2-micro"
+    dev  = "e2-small"
+    prod = "e2-medium"
+  }
+}
+
+resource "google_compute_instance" "app" {
+  machine_type = local.machine_types[var.environment]
+  # ...
+}
+```
+
+**2. Add TTL labels:**
+
+```hcl
+locals {
+  test_labels = {
+    environment = "test"
+    ttl         = "2h"
+    created-at  = formatdate("YYYY-MM-DD", timestamp())
+  }
+}
+```
+
+**3. Conditional integration tests:**
+
+```yaml
+# GitHub Actions
+integration-test:
+  if: github.ref == 'refs/heads/main'
+  runs-on: ubuntu-latest
+  steps:
+    - run: go test -v ./tests/integration/...
+```
+
+---
+
+## Best Practices
+
+### Test Organization
 
 ```
-Quick syntax check? → terraform validate + fmt
-Security scan? → trivy + checkov
-Terraform 1.6+, simple logic? → Native tests
-Pre-1.6, or complex integration? → Terratest
+tests/
+├── unit/                       # Native tests with mocks
+│   ├── validation_test.tftest.hcl
+│   └── logic_test.tftest.hcl
+├── integration/                # Native tests with real resources
+│   ├── vpc_test.tftest.hcl
+│   └── gke_test.tftest.hcl
+└── e2e/                        # Terratest (if needed)
+    ├── complete_test.go
+    └── fixtures/
 ```
 
-### Cost Optimization
+### Naming Conventions
 
-1. Use mocking for unit tests
-2. Implement resource TTL tags
-3. Run integration tests only on main branch
-4. Use smaller instance types in tests
-5. Share test resources when safe
+```hcl
+# Test file: <module>_test.tftest.hcl
+# Test run: <action>_<expected_result>
+
+run "vpc_creates_with_correct_name" { }
+run "invalid_cidr_fails_validation" { }
+run "gke_cluster_is_private" { }
+```
+
+### Cleanup Patterns
+
+**Terratest with defer:**
+
+```go
+defer terraform.Destroy(t, terraformOptions)
+terraform.InitAndApply(t, terraformOptions)
+```
+
+**Native tests auto-cleanup:**
+
+Native tests with `command = apply` automatically destroy resources after the test run.
 
 ---
 

@@ -1,92 +1,353 @@
-# CI/CD Workflows for Terraform
+# CI/CD Workflows for OpenTofu/GCP
 
-> **Part of:** [terraform-skill](../SKILL.md)
-> **Purpose:** CI/CD integration patterns for Terraform/OpenTofu
+> **Part of:** [opentofu-skill-gcp](../SKILL.md)
+> **Purpose:** CI/CD integration patterns for OpenTofu with GCP
 
-This document provides detailed CI/CD workflow templates and optimization strategies for infrastructure-as-code pipelines.
+This document provides detailed CI/CD workflow templates and optimization strategies for OpenTofu/GCP infrastructure-as-code pipelines.
 
 ---
 
 ## Table of Contents
 
-1. [GitHub Actions Workflow](#github-actions-workflow)
-2. [GitLab CI Template](#gitlab-ci-template)
-3. [Cost Optimization](#cost-optimization)
-4. [Automated Cleanup](#automated-cleanup)
-5. [Best Practices](#best-practices)
+1. [Cloud Build Pipeline](#cloud-build-pipeline)
+2. [GitHub Actions with Workload Identity](#github-actions-with-workload-identity)
+3. [GitLab CI Template](#gitlab-ci-template)
+4. [Cost Optimization](#cost-optimization)
+5. [Automated Cleanup](#automated-cleanup)
+6. [Best Practices](#best-practices)
 
 ---
 
-## GitHub Actions Workflow
+## Cloud Build Pipeline
 
-### Complete Example
+### Complete Cloud Build Configuration
 
 ```yaml
-# .github/workflows/terraform.yml
-name: Terraform
+# cloudbuild.yaml
+steps:
+  # Initialize OpenTofu
+  - name: 'ghcr.io/opentofu/opentofu:latest'
+    id: 'init'
+    entrypoint: 'tofu'
+    args: ['init', '-backend-config=bucket=${_STATE_BUCKET}']
+    dir: 'environments/${_ENVIRONMENT}'
 
-on: [push, pull_request]
+  # Format check
+  - name: 'ghcr.io/opentofu/opentofu:latest'
+    id: 'fmt'
+    entrypoint: 'tofu'
+    args: ['fmt', '-check', '-recursive']
+    dir: 'environments/${_ENVIRONMENT}'
+
+  # Validate
+  - name: 'ghcr.io/opentofu/opentofu:latest'
+    id: 'validate'
+    entrypoint: 'tofu'
+    args: ['validate']
+    dir: 'environments/${_ENVIRONMENT}'
+    waitFor: ['init']
+
+  # Trivy security scan
+  - name: 'aquasec/trivy:latest'
+    id: 'trivy'
+    args: ['config', '.', '--severity', 'CRITICAL,HIGH', '--exit-code', '1']
+    dir: 'environments/${_ENVIRONMENT}'
+
+  # Checkov policy scan
+  - name: 'bridgecrew/checkov:latest'
+    id: 'checkov'
+    args: ['-d', '.', '--framework', 'terraform', '--compact', '--quiet', '--check', 'CKV_GCP*']
+    dir: 'environments/${_ENVIRONMENT}'
+    env:
+      - 'CHECKOV_OUTPUT_FORMAT=cli'
+
+  # Plan
+  - name: 'ghcr.io/opentofu/opentofu:latest'
+    id: 'plan'
+    entrypoint: 'tofu'
+    args: ['plan', '-out=tfplan', '-input=false']
+    dir: 'environments/${_ENVIRONMENT}'
+    waitFor: ['validate', 'trivy', 'checkov']
+
+  # Scan plan file (deeper analysis)
+  - name: 'ghcr.io/opentofu/opentofu:latest'
+    id: 'show-plan'
+    entrypoint: 'sh'
+    args: ['-c', 'tofu show -json tfplan > tfplan.json']
+    dir: 'environments/${_ENVIRONMENT}'
+    waitFor: ['plan']
+
+  - name: 'bridgecrew/checkov:latest'
+    id: 'checkov-plan'
+    args: ['-f', 'tfplan.json', '--compact', '--check', 'CKV_GCP*']
+    dir: 'environments/${_ENVIRONMENT}'
+    waitFor: ['show-plan']
+
+  # Apply (manual approval for prod)
+  - name: 'ghcr.io/opentofu/opentofu:latest'
+    id: 'apply'
+    entrypoint: 'tofu'
+    args: ['apply', '-auto-approve', 'tfplan']
+    dir: 'environments/${_ENVIRONMENT}'
+    waitFor: ['checkov-plan']
+
+substitutions:
+  _ENVIRONMENT: 'dev'
+  _STATE_BUCKET: 'my-project-tofu-state'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_MEDIUM'
+
+timeout: '1800s'  # 30 minutes
+```
+
+### Cloud Build Trigger Configuration
+
+```yaml
+# cloudbuild-trigger.yaml
+name: 'tofu-${_ENVIRONMENT}'
+description: 'OpenTofu deployment for ${_ENVIRONMENT}'
+
+github:
+  owner: 'my-org'
+  name: 'infrastructure'
+  push:
+    branch: '^main$'
+
+includedFiles:
+  - 'environments/${_ENVIRONMENT}/**'
+  - 'modules/**'
+
+substitutions:
+  _ENVIRONMENT: 'prod'
+  _STATE_BUCKET: 'my-project-tofu-state'
+
+filename: 'cloudbuild.yaml'
+
+approvalConfig:
+  approvalRequired: true  # Require approval for prod
+```
+
+### Cloud Build with State Encryption
+
+```yaml
+# cloudbuild-encrypted.yaml
+steps:
+  - name: 'ghcr.io/opentofu/opentofu:latest'
+    id: 'init'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        # Configure encryption key
+        export TOFU_ENCRYPTION_KEY_KMS="projects/${PROJECT_ID}/locations/global/keyRings/tofu-state/cryptoKeys/state-key"
+        tofu init -backend-config=bucket=${_STATE_BUCKET}
+    dir: 'environments/${_ENVIRONMENT}'
+
+  # ... rest of steps
+```
+
+---
+
+## GitHub Actions with Workload Identity
+
+### Workload Identity Federation Setup
+
+First, create the Workload Identity Pool and Provider:
+
+```hcl
+# modules/github-wif/main.tf
+resource "google_iam_workload_identity_pool" "github" {
+  workload_identity_pool_id = "github-pool"
+  display_name              = "GitHub Actions Pool"
+  description               = "Pool for GitHub Actions OIDC authentication"
+}
+
+resource "google_iam_workload_identity_pool_provider" "github" {
+  workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
+  workload_identity_pool_provider_id = "github-provider"
+  display_name                       = "GitHub Provider"
+
+  attribute_mapping = {
+    "google.subject"       = "assertion.sub"
+    "attribute.actor"      = "assertion.actor"
+    "attribute.repository" = "assertion.repository"
+    "attribute.ref"        = "assertion.ref"
+  }
+
+  attribute_condition = "assertion.repository_owner == '${var.github_org}'"
+
+  oidc {
+    issuer_uri = "https://token.actions.githubusercontent.com"
+  }
+}
+
+resource "google_service_account" "github_actions" {
+  account_id   = "github-actions-tofu"
+  display_name = "GitHub Actions OpenTofu"
+}
+
+resource "google_service_account_iam_member" "github_wif" {
+  service_account_id = google_service_account.github_actions.id
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_org}/${var.github_repo}"
+}
+
+# Grant necessary permissions
+resource "google_project_iam_member" "github_actions" {
+  for_each = toset([
+    "roles/compute.admin",
+    "roles/container.admin",
+    "roles/iam.serviceAccountUser",
+    "roles/storage.admin",
+    "roles/cloudsql.admin",
+  ])
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.github_actions.email}"
+}
+
+output "workload_identity_provider" {
+  value = google_iam_workload_identity_pool_provider.github.name
+}
+
+output "service_account_email" {
+  value = google_service_account.github_actions.email
+}
+```
+
+### GitHub Actions Workflow
+
+```yaml
+# .github/workflows/tofu.yml
+name: OpenTofu
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write  # Required for Workload Identity
+
+env:
+  TOFU_VERSION: '1.11.3'
+  WORKLOAD_IDENTITY_PROVIDER: 'projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+  SERVICE_ACCOUNT: 'github-actions-tofu@my-project.iam.gserviceaccount.com'
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: hashicorp/setup-terraform@v2
+      - uses: actions/checkout@v4
 
-      - name: Terraform Format
-        run: terraform fmt -check -recursive
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
 
-      - name: Terraform Init
-        run: terraform init
+      - name: OpenTofu Format
+        run: tofu fmt -check -recursive
 
-      - name: Terraform Validate
-        run: terraform validate
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: OpenTofu Init
+        run: tofu init
+        working-directory: environments/dev
+
+      - name: OpenTofu Validate
+        run: tofu validate
+        working-directory: environments/dev
 
       - name: TFLint
-        run: |
-          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+        uses: terraform-linters/setup-tflint@v4
+      - run: |
           tflint --init
-          tflint
+          tflint --enable-plugin=google
+        working-directory: environments/dev
 
-  test:
-    needs: validate
+  security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Run Terraform Tests
-        run: terraform test
-
-      # Or for Terratest:
-      - name: Setup Go
-        uses: actions/setup-go@v4
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@master
         with:
-          go-version: '1.21'
+          scan-type: 'config'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
 
-      - name: Run Terratest
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform
+          check: CKV_GCP*
+          quiet: true
+
+  test:
+    needs: [validate, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: Run OpenTofu Tests
         run: |
-          cd tests
-          go test -v -timeout 30m -parallel 4
+          tofu init
+          tofu test
+        working-directory: environments/dev
 
   plan:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: hashicorp/setup-terraform@v2
+      - uses: actions/checkout@v4
 
-      - name: Terraform Init
-        run: terraform init
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
 
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: OpenTofu Init
+        run: tofu init
+        working-directory: environments/prod
+
+      - name: OpenTofu Plan
+        run: tofu plan -out=tfplan -input=false
+        working-directory: environments/prod
 
       - name: Upload Plan
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: tfplan
-          path: tfplan
+          path: environments/prod/tfplan
 
   apply:
     needs: plan
@@ -94,43 +355,32 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
     steps:
-      - uses: actions/checkout@v3
-      - uses: hashicorp/setup-terraform@v2
+      - uses: actions/checkout@v4
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
 
       - name: Download Plan
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: tfplan
+          path: environments/prod
 
-      - name: Terraform Apply
-        run: terraform apply tfplan
-```
+      - name: OpenTofu Init
+        run: tofu init
+        working-directory: environments/prod
 
-### With Cost Estimation (Infracost)
-
-```yaml
-  cost-estimate:
-    needs: plan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup Infracost
-        uses: infracost/actions/setup@v2
-        with:
-          api-key: ${{ secrets.INFRACOST_API_KEY }}
-
-      - name: Generate Cost Estimate
-        run: |
-          infracost breakdown --path . \
-            --format json \
-            --out-file /tmp/infracost.json
-
-      - name: Post Cost Comment
-        uses: infracost/actions/comment@v1
-        with:
-          path: /tmp/infracost.json
-          behavior: update
+      - name: OpenTofu Apply
+        run: tofu apply -auto-approve tfplan
+        working-directory: environments/prod
 ```
 
 ---
@@ -141,60 +391,86 @@ jobs:
 # .gitlab-ci.yml
 stages:
   - validate
+  - security
   - test
   - plan
   - apply
 
 variables:
-  TF_ROOT: ${CI_PROJECT_DIR}
+  TOFU_VERSION: "1.11.3"
+  TF_ROOT: ${CI_PROJECT_DIR}/environments/${ENVIRONMENT}
+  GOOGLE_APPLICATION_CREDENTIALS: ${CI_PROJECT_DIR}/gcp-key.json
 
-.terraform_template:
-  image: hashicorp/terraform:latest
+.tofu_template:
+  image: ghcr.io/opentofu/opentofu:${TOFU_VERSION}
   before_script:
     - cd ${TF_ROOT}
-    - terraform init
+    - echo ${GCP_SERVICE_ACCOUNT_KEY} | base64 -d > ${GOOGLE_APPLICATION_CREDENTIALS}
+    - tofu init
 
 validate:
-  extends: .terraform_template
+  extends: .tofu_template
   stage: validate
   script:
-    - terraform fmt -check -recursive
-    - terraform validate
+    - tofu fmt -check -recursive
+    - tofu validate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+security-scan:
+  stage: security
+  image: bridgecrew/checkov:latest
+  script:
+    - checkov -d ${TF_ROOT} --framework terraform --check CKV_GCP* --compact
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  allow_failure: false
+
+trivy-scan:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy config ${TF_ROOT} --severity CRITICAL,HIGH --exit-code 1
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 test:
-  extends: .terraform_template
+  extends: .tofu_template
   stage: test
   script:
-    - terraform test
-  only:
-    - merge_requests
-    - main
+    - tofu test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 plan:
-  extends: .terraform_template
+  extends: .tofu_template
   stage: plan
   script:
-    - terraform plan -out=tfplan
+    - tofu plan -out=tfplan
   artifacts:
     paths:
       - ${TF_ROOT}/tfplan
     expire_in: 1 week
-  only:
-    - merge_requests
-    - main
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 apply:
-  extends: .terraform_template
+  extends: .tofu_template
   stage: apply
   script:
-    - terraform apply tfplan
+    - tofu apply tfplan
   dependencies:
     - plan
-  only:
-    - main
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   when: manual
   environment:
-    name: production
+    name: ${ENVIRONMENT}
 ```
 
 ---
@@ -206,9 +482,9 @@ apply:
 1. **Use mocking for PR validation** (free)
 2. **Run integration tests only on main branch** (controlled cost)
 3. **Implement auto-cleanup** (prevent orphaned resources)
-4. **Tag all test resources** (track spending)
+4. **Label all test resources** (track spending)
 
-### Example: Conditional Test Execution
+### Conditional Test Execution
 
 ```yaml
 # GitHub Actions
@@ -216,32 +492,35 @@ test:
   runs-on: ubuntu-latest
   steps:
     - name: Run Unit Tests (Mocked)
-      run: terraform test
+      run: tofu test
 
     - name: Run Integration Tests
       if: github.ref == 'refs/heads/main'
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       run: |
-        cd tests
+        cd tests/integration
         go test -v -timeout 30m
 ```
 
-### Cost-Aware Test Tags
+### Cost-Aware Test Labels
 
-```go
-// In Terratest
-terraformOptions := &terraform.Options{
-    TerraformDir: "../examples/complete",
-    Vars: map[string]interface{}{
-        "tags": map[string]string{
-            "Environment": "test",
-            "TTL":         "2h",
-            "CreatedBy":   "CI",
-            "JobID":       os.Getenv("GITHUB_RUN_ID"),
-        },
-    },
+```hcl
+locals {
+  test_labels = {
+    environment = "test"
+    ttl         = "2h"
+    created-by  = "ci"
+    job-id      = var.ci_job_id
+  }
+}
+
+resource "google_compute_instance" "test" {
+  name         = "test-${var.ci_job_id}"
+  machine_type = "e2-micro"  # Use smallest size for tests
+  zone         = var.zone
+
+  labels = local.test_labels
+
+  # ...
 }
 ```
 
@@ -249,27 +528,92 @@ terraformOptions := &terraform.Options{
 
 ## Automated Cleanup
 
-### Cleanup Script (Bash)
+### Cleanup Script
 
 ```bash
 #!/bin/bash
-# cleanup-test-resources.sh
+# scripts/cleanup-test-resources.sh
 
-# Find and terminate instances older than 2 hours with test tag
-aws resourcegroupstaggingapi get-resources \
-  --tag-filters Key=Environment,Values=test \
-  --query 'ResourceTagMappingList[?Tags[?Key==`TTL` && Value<`'$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%S)'`]].ResourceARN' \
-  --output text | \
-  while read arn; do
-    instance_id=$(echo $arn | grep -oP 'instance/\K[^/]+')
-    if [ ! -z "$instance_id" ]; then
-      echo "Terminating instance: $instance_id"
-      aws ec2 terminate-instances --instance-ids $instance_id
-    fi
-  done
+# Find and delete resources older than 2 hours with test label
+PROJECT_ID="${1:-$(gcloud config get-value project)}"
+MAX_AGE_HOURS="${2:-2}"
+
+echo "Cleaning up test resources in project: ${PROJECT_ID}"
+echo "Max age: ${MAX_AGE_HOURS} hours"
+
+# Calculate cutoff time
+CUTOFF=$(date -u -d "${MAX_AGE_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
+
+# Clean up Compute Instances
+echo "Checking compute instances..."
+gcloud compute instances list \
+  --project="${PROJECT_ID}" \
+  --filter="labels.environment=test AND creationTimestamp<${CUTOFF}" \
+  --format="value(name,zone)" | \
+while read NAME ZONE; do
+  echo "Deleting instance: ${NAME} in ${ZONE}"
+  gcloud compute instances delete "${NAME}" \
+    --project="${PROJECT_ID}" \
+    --zone="${ZONE}" \
+    --quiet
+done
+
+# Clean up GKE Clusters
+echo "Checking GKE clusters..."
+gcloud container clusters list \
+  --project="${PROJECT_ID}" \
+  --filter="resourceLabels.environment=test AND createTime<${CUTOFF}" \
+  --format="value(name,location)" | \
+while read NAME LOCATION; do
+  echo "Deleting cluster: ${NAME} in ${LOCATION}"
+  gcloud container clusters delete "${NAME}" \
+    --project="${PROJECT_ID}" \
+    --location="${LOCATION}" \
+    --quiet
+done
+
+# Clean up Cloud SQL instances
+echo "Checking Cloud SQL instances..."
+gcloud sql instances list \
+  --project="${PROJECT_ID}" \
+  --filter="settings.userLabels.environment=test" \
+  --format="value(name)" | \
+while read NAME; do
+  echo "Deleting SQL instance: ${NAME}"
+  gcloud sql instances delete "${NAME}" \
+    --project="${PROJECT_ID}" \
+    --quiet
+done
+
+echo "Cleanup complete"
 ```
 
-### Scheduled Cleanup (GitHub Actions)
+### Scheduled Cleanup (Cloud Build)
+
+```yaml
+# cloudbuild-cleanup.yaml
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'cleanup'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        chmod +x scripts/cleanup-test-resources.sh
+        ./scripts/cleanup-test-resources.sh ${PROJECT_ID} 2
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Schedule with Cloud Scheduler:
+# gcloud scheduler jobs create http cleanup-test-resources \
+#   --schedule="0 */2 * * *" \
+#   --location=us-central1 \
+#   --uri="https://cloudbuild.googleapis.com/v1/projects/${PROJECT_ID}/triggers/${TRIGGER_ID}:run" \
+#   --oauth-service-account-email="${SERVICE_ACCOUNT}"
+```
+
+### GitHub Actions Cleanup
 
 ```yaml
 # .github/workflows/cleanup.yml
@@ -278,23 +622,29 @@ name: Cleanup Test Resources
 on:
   schedule:
     - cron: '0 */2 * * *'  # Every 2 hours
-  workflow_dispatch:        # Manual trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
 
       - name: Run Cleanup Script
-        run: ./scripts/cleanup-test-resources.sh
+        run: ./scripts/cleanup-test-resources.sh ${{ vars.GCP_PROJECT_ID }} 2
 ```
 
 ---
@@ -306,15 +656,15 @@ jobs:
 ```yaml
 # Different workflows for different environments
 .github/workflows/
-  terraform-dev.yml
-  terraform-staging.yml
-  terraform-prod.yml
+  tofu-dev.yml
+  tofu-staging.yml
+  tofu-prod.yml
 ```
 
 Or use reusable workflows:
 
 ```yaml
-# .github/workflows/terraform-deploy.yml (reusable)
+# .github/workflows/tofu-deploy.yml (reusable)
 on:
   workflow_call:
     inputs:
@@ -331,46 +681,48 @@ jobs:
 ### 2. Require Approvals for Production
 
 ```yaml
+# GitHub Actions
 apply:
   environment:
     name: production
     # Requires manual approval in GitHub
-  when: manual
+
+# Cloud Build
+approvalConfig:
+  approvalRequired: true
 ```
 
-### 3. Use Remote State
+### 3. Use Remote State with Locking
 
 ```hcl
-# backend.tf
-terraform {
-  backend "s3" {
-    bucket         = "my-terraform-state"
-    key            = "prod/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "terraform-locks"
-    encrypt        = true
+tofu {
+  backend "gcs" {
+    bucket = "my-project-tofu-state"
+    prefix = "prod"
   }
 }
 ```
 
-### 4. Implement State Locking
+GCS backend handles locking automatically.
+
+### 4. Implement State Locking Timeout
 
 ```yaml
 # In CI, use -lock-timeout to handle concurrent runs
-- name: Terraform Apply
-  run: terraform apply -lock-timeout=10m tfplan
+- name: OpenTofu Apply
+  run: tofu apply -lock-timeout=10m tfplan
 ```
 
-### 5. Cache Terraform Plugins
+### 5. Cache OpenTofu Plugins
 
 ```yaml
 # GitHub Actions
-- name: Cache Terraform Plugins
-  uses: actions/cache@v3
+- name: Cache OpenTofu Plugins
+  uses: actions/cache@v4
   with:
     path: |
       ~/.terraform.d/plugin-cache
-    key: ${{ runner.os }}-terraform-${{ hashFiles('**/.terraform.lock.hcl') }}
+    key: ${{ runner.os }}-tofu-${{ hashFiles('**/.terraform.lock.hcl') }}
 ```
 
 ### 6. Security Scanning in CI
@@ -379,93 +731,76 @@ terraform {
 security-scan:
   runs-on: ubuntu-latest
   steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Run Trivy
       uses: aquasecurity/trivy-action@master
       with:
         scan-type: 'config'
         scan-ref: '.'
+        severity: 'CRITICAL,HIGH'
+        exit-code: '1'
 
     - name: Run Checkov
       uses: bridgecrewio/checkov-action@master
       with:
         directory: .
         framework: terraform
+        check: CKV_GCP*
 ```
-
----
-
-## Atlantis Integration
-
-[Atlantis](https://www.runatlantis.io/) provides Terraform automation via pull request comments.
-
-### atlantis.yaml
-
-```yaml
-version: 3
-projects:
-  - name: production
-    dir: environments/prod
-    workspace: default
-    terraform_version: v1.6.0
-    workflow: custom
-
-workflows:
-  custom:
-    plan:
-      steps:
-        - init
-        - plan:
-            extra_args: ["-lock", "false"]
-    apply:
-      steps:
-        - apply
-```
-
-### Benefits
-
-- Plan results as PR comments
-- Apply via PR comments
-- Locking prevents concurrent changes
-- Integrates with VCS (GitHub, GitLab, Bitbucket)
 
 ---
 
 ## Troubleshooting
 
-### Issue: Tests fail in CI but pass locally
+### Issue: Workload Identity authentication fails
 
-**Cause:** Different Terraform/provider versions
+**Cause:** Missing permissions or incorrect configuration
 
 **Solution:**
 
-```hcl
-# versions.tf - Pin versions
-terraform {
-  required_version = ">= 1.6.0"
+```bash
+# Verify WIF pool exists
+gcloud iam workload-identity-pools describe github-pool \
+  --location=global
 
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
+# Verify provider exists
+gcloud iam workload-identity-pools providers describe github-provider \
+  --workload-identity-pool=github-pool \
+  --location=global
+
+# Check service account binding
+gcloud iam service-accounts get-iam-policy github-actions-tofu@project.iam.gserviceaccount.com
 ```
 
-### Issue: Parallel tests conflict
+### Issue: Cloud Build times out
 
-**Cause:** Resource naming collisions
+**Cause:** Long-running operations or slow providers
 
 **Solution:**
 
-```go
-// Use unique identifiers
-uniqueId := random.UniqueId()
-bucketName := fmt.Sprintf("test-bucket-%s-%s",
-    os.Getenv("GITHUB_RUN_ID"),
-    uniqueId)
+```yaml
+# Increase timeout
+timeout: '3600s'  # 1 hour
+
+# Use faster machine type
+options:
+  machineType: 'E2_HIGHCPU_8'
+```
+
+### Issue: State lock not released
+
+**Cause:** Previous run crashed without releasing lock
+
+**Solution:**
+
+```bash
+# GCS backend - locks are stored in the bucket
+# Check for lock file
+gsutil ls gs://my-tofu-state/.terraform.lock.hcl
+
+# Force unlock (use with caution!)
+tofu force-unlock LOCK_ID
 ```
 
 ---

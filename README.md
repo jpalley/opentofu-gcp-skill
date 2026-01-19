@@ -1,39 +1,45 @@
-# Terraform Skill for Claude
+# OpenTofu Skill for GCP
 
 [![Claude Skill](https://img.shields.io/badge/Claude-Skill-5865F2)](https://docs.claude.ai/docs/agent-skills)
-[![Terraform](https://img.shields.io/badge/Terraform-1.0+-623CE4)](https://www.terraform.io/)
-[![OpenTofu](https://img.shields.io/badge/OpenTofu-1.6+-FFD814)](https://opentofu.org/)
+[![OpenTofu](https://img.shields.io/badge/OpenTofu-1.11+-FFD814)](https://opentofu.org/)
+[![GCP](https://img.shields.io/badge/GCP-Google%20Cloud-4285F4)](https://cloud.google.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Comprehensive Terraform and OpenTofu best practices skill for Claude Code. Get instant guidance on testing strategies, module patterns, CI/CD workflows, and production-ready infrastructure code.
+Comprehensive OpenTofu best practices skill for Claude Code, optimized for Google Cloud Platform. Get instant guidance on testing strategies, module patterns, CI/CD workflows, security scanning, and production-ready GCP infrastructure code.
 
 ## What This Skill Provides
 
-🧪 **Testing Frameworks**
-- Decision matrix for choosing between native tests and Terratest
+**OpenTofu-Unique Features**
+- State encryption with GCP KMS (OpenTofu 1.7+)
+- Early variable evaluation (OpenTofu 1.8+)
+- `enabled` meta-argument (OpenTofu 1.11+)
+- Ephemeral resources for secrets (OpenTofu 1.11+)
+
+**Testing Frameworks**
+- Decision matrix for native tests vs Terratest
 - Testing strategy workflows (static → integration → E2E)
-- Real-world examples and patterns
+- GCP-specific test patterns (GKE, Cloud SQL, Pub/Sub)
 
-📦 **Module Development**
-- Structure and naming conventions
-- Versioning strategies
-- Public vs private module patterns
+**Module Development**
+- Structure and naming conventions (`tofu-google-<NAME>`)
+- GCP module patterns (VPC, GKE, Cloud SQL, Pub/Sub)
+- Versioning strategies with semantic versioning
 
-🔄 **CI/CD Integration**
-- GitHub Actions workflows
-- GitLab CI examples
-- Cost optimization patterns
-- Compliance automation
+**CI/CD Integration**
+- Cloud Build pipeline templates with security scanning
+- GitHub Actions with Workload Identity Federation
+- GitLab CI templates for GCP
 
-🔒 **Security & Compliance**
-- Trivy, Checkov integration
-- Policy-as-code patterns
-- Compliance scanning workflows
+**Security & Compliance**
+- Three-tier scanning: Trivy (AVD-GCP-*), Checkov (CKV_GCP_*), Prowler
+- State encryption configuration
+- Google Secret Manager integration
+- VPC Service Controls patterns
 
-📋 **Quick Reference**
+**Quick Reference**
 - Decision flowcharts
-- Common patterns (✅ DO vs ❌ DON'T)
-- Cheat sheets for rapid consultation
+- Common patterns (DO vs DON'T)
+- GCP-specific cheat sheets
 
 ## Installation
 
@@ -42,106 +48,126 @@ This plugin is distributed via Claude Code marketplace using `.claude-plugin/mar
 ### Claude Code (Recommended)
 
 ```bash
-/plugin marketplace add antonbabenko/terraform-skill
-/plugin install terraform-skill@antonbabenko
+/plugin install opentofu-skill-gcp
 ```
 
 ### Manual Installation
 
 ```bash
 # Clone to Claude skills directory
-git clone https://github.com/antonbabenko/terraform-skill ~/.claude/skills/terraform-skill
-```
-
-### Private Testing
-
-While the repository is private, you can test locally:
-
-```bash
-git clone git@github.com:antonbabenko/terraform-skill.git ~/.claude/skills/terraform-skill
-# Claude Code will load it from the local filesystem
+git clone https://github.com/antonbabenko/opentofu-skill-gcp ~/.claude/skills/opentofu-skill-gcp
 ```
 
 ### Verify Installation
 
 After installation, try:
 ```
-"Create a Terraform module with testing for an S3 bucket"
+"Create an OpenTofu module for a GCP VPC with tests"
 ```
 
-Claude will automatically use the skill when working with Terraform/OpenTofu code.
+Claude will automatically use the skill when working with OpenTofu/GCP code.
 
 ## Quick Start Examples
 
 **Create a module with tests:**
-> "Create a Terraform module for AWS VPC with native tests"
+> "Create an OpenTofu module for GCP VPC with native tests"
+
+**Set up state encryption:**
+> "Configure state encryption with GCP KMS for OpenTofu"
 
 **Review existing code:**
-> "Review this Terraform configuration following best practices"
+> "Review this OpenTofu configuration following GCP best practices"
 
 **Generate CI/CD workflow:**
-> "Create a GitHub Actions workflow for Terraform with cost estimation"
+> "Create a Cloud Build pipeline for OpenTofu with security scanning"
 
 **Testing strategy:**
-> "Help me choose between native tests and Terratest for my modules"
+> "Help me choose between native tests and Terratest for my GCP modules"
+
+**Run QA checks:**
+> "Run QA checks on my OpenTofu code using the qa_runner script"
 
 ## What It Covers
+
+### GCP Services
+
+- **Compute**: Instances, instance groups, templates
+- **Networking**: VPC, subnets, firewall rules, Cloud NAT
+- **Storage**: GCS buckets, Cloud SQL
+- **Containers**: GKE clusters and node pools
+- **Artifact Registry**: Docker, npm, Python, Maven repositories
+- **Messaging**: Pub/Sub topics and subscriptions
+- **IAM**: Service accounts, custom roles, Workload Identity
+
+### OpenTofu Features
+
+| Feature | Version | Description |
+|---------|---------|-------------|
+| State Encryption | 1.7+ | Client-side encryption with GCP KMS |
+| Early Variable Evaluation | 1.8+ | Variables in backend configuration |
+| `enabled` Meta-argument | 1.11+ | Conditional resource creation |
+| Ephemeral Resources | 1.11+ | Secrets that don't persist in state |
 
 ### Testing Strategy Framework
 
 Decision matrices for:
-- When to use native tests (Terraform 1.6+)
+- When to use native tests (OpenTofu 1.7+)
 - When to use Terratest (Go-based)
-- Multi-environment testing patterns
+- GCP-specific testing patterns
 
 ### Module Development Patterns
 
-- Naming conventions (`terraform-<PROVIDER>-<NAME>`)
+- Naming conventions (`tofu-google-<NAME>`)
 - Directory structure best practices
+- Required GCP labels template
 - Input variable organization
 - Output value design
-- Version constraint patterns
-- Documentation standards
 
 ### CI/CD Workflows
 
-- GitHub Actions examples
+- Cloud Build templates with security scanning
+- GitHub Actions with Workload Identity Federation
 - GitLab CI templates
-- Atlantis integration
-- Cost estimation (Infracost)
-- Security scanning (Trivy, Checkov)
-- Compliance checking
+- Security scanning integration (Trivy, Checkov)
 
 ### Security & Compliance
 
-- Static analysis integration
-- Policy-as-code patterns
-- Secrets management
-- State file security
-- Compliance scanning workflows
+- Three-tier security scanning approach
+- State encryption with GCP KMS
+- Google Secret Manager integration
+- VPC Service Controls
+- Common GCP security misconfigurations to avoid
 
-### Common Patterns & Anti-patterns
+### QA Automation
 
-Side-by-side ✅ DO vs ❌ DON'T examples for:
-- Variable naming
-- Resource naming
-- Module composition
-- State management
-- Provider configuration
+The included `scripts/qa_runner.py` runs:
+- `tofu fmt` - Code formatting
+- `tofu validate` - Configuration validation
+- `tflint` - Linting and best practices
+- `trivy` - IaC misconfiguration scanning
+- `checkov` - Policy compliance scanning
+
+```bash
+python scripts/qa_runner.py /path/to/tofu/project
+```
 
 ## Why This Skill?
 
-**Based on Production Experience:**
-- Patterns from [terraform-best-practices.com](https://terraform-best-practices.com)
-- Community-tested approaches from terraform-aws-modules
-- AWS Hero expertise in enterprise IaC
-- Real-world usage across 100+ modules
+**OpenTofu-Native:**
+- Leverages OpenTofu-unique features (state encryption, enabled meta-argument)
+- Uses only `tofu` commands (no Terraform references)
+- Up-to-date with OpenTofu 1.7+ features
 
-**Version-Specific Guidance:**
-- Terraform 1.0+ features
-- OpenTofu 1.6+ compatibility
-- Native test framework (1.6+)
-- Current tooling ecosystem (2024-2026)
+**GCP-Optimized:**
+- GCP-specific patterns and best practices
+- Google Cloud service examples throughout
+- Workload Identity Federation for CI/CD
+- GCS backend with state encryption
+
+**Production-Tested:**
+- Patterns from real-world GCP deployments
+- Security scanning integration
+- Compliance automation workflows
 
 **Decision Frameworks:**
 Not just "what to do" but "when and why" - helping you make informed architecture decisions.
@@ -149,8 +175,18 @@ Not just "what to do" but "when and why" - helping you make informed architectur
 ## Requirements
 
 - **Claude Code** or other Claude environment supporting skills
-- **Terraform** 1.0+ or **OpenTofu** 1.6+
-- Optional: MCP Terraform server for enhanced registry integration
+- **OpenTofu** 1.7+ (1.11+ recommended for latest features)
+- **GCP Project** with appropriate permissions
+- Optional: MCP tools for enhanced registry integration
+
+### QA Runner Requirements
+
+For the QA runner script:
+- Python 3.8+
+- `tofu` (OpenTofu CLI)
+- `tflint`
+- `trivy`
+- `checkov`
 
 ## Contributing
 
@@ -161,7 +197,7 @@ See [CLAUDE.md](CLAUDE.md) for:
 - Testing and validation approach
 
 **Issues & Feedback:**
-[GitHub Issues](https://github.com/antonbabenko/terraform-skill/issues)
+[GitHub Issues](https://github.com/antonbabenko/opentofu-skill-gcp/issues)
 
 ## Releases
 
@@ -181,15 +217,16 @@ Releases are created automatically when changes are pushed to master.
 **License:** Apache 2.0 - see [LICENSE](LICENSE)
 
 **Sources:**
+- [OpenTofu Documentation](https://opentofu.org/docs/)
+- [Google Cloud Best Practices](https://cloud.google.com/docs/terraform/best-practices-for-terraform)
 - [terraform-best-practices.com](https://terraform-best-practices.com)
-- HashiCorp Terraform Documentation
-- Google Cloud Terraform Best Practices
-- AWS Terraform Best Practices
-- Community expertise and AWS Hero experience
+- Community expertise
 
 ## Related Resources
 
-- [terraform-best-practices.com](https://terraform-best-practices.com) - Comprehensive guide
-- [terraform-aws-modules](https://github.com/terraform-aws-modules) - Production modules
-- [Compliance.tf](https://compliance.tf) - Terraform Compliance for Cloud-Native Enterprise
-- [Official Terraform Docs](https://www.terraform.io/docs)
+- [OpenTofu Documentation](https://opentofu.org/docs/) - Official OpenTofu docs
+- [Google Cloud Terraform Docs](https://cloud.google.com/docs/terraform) - GCP provider reference
+- [terraform-google-modules](https://github.com/terraform-google-modules) - Community GCP modules
+- [Trivy](https://aquasecurity.github.io/trivy/) - Security scanner
+- [Checkov](https://www.checkov.io/) - Policy-as-code
+- [Prowler](https://prowler.pro/) - Cloud security posture

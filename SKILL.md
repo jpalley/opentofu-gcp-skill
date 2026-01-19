@@ -1,27 +1,114 @@
 ---
-name: terraform-skill
-description: Use when working with Terraform or OpenTofu - creating modules, writing tests (native test framework, Terratest), setting up CI/CD pipelines, reviewing configurations, choosing between testing approaches, debugging state issues, implementing security scanning (trivy, checkov), or making infrastructure-as-code architecture decisions
+name: opentofu-skill-gcp
+description: Use when working with OpenTofu for GCP - creating modules, writing tests (native test framework, Terratest), setting up CI/CD pipelines with Cloud Build, reviewing configurations, state encryption with GCP KMS, debugging state issues, implementing security scanning (trivy, checkov, prowler), or making infrastructure-as-code architecture decisions for Google Cloud Platform
 ---
 
-# Terraform Skill for Claude
+# OpenTofu Skill for GCP
 
-Comprehensive Terraform and OpenTofu guidance covering testing, modules, CI/CD, and production patterns. Based on terraform-best-practices.com and enterprise experience.
+Comprehensive OpenTofu guidance for Google Cloud Platform covering state encryption, testing, modules, CI/CD with Cloud Build, and production patterns. Based on terraform-best-practices.com and enterprise GCP experience.
 
 ## When to Use This Skill
 
 **Activate this skill when:**
-- Creating new Terraform or OpenTofu configurations or modules
+- Creating new OpenTofu configurations or modules for GCP
 - Setting up testing infrastructure for IaC code
+- Configuring state encryption with GCP KMS
 - Deciding between testing approaches (validate, plan, frameworks)
-- Structuring multi-environment deployments
-- Implementing CI/CD for infrastructure-as-code
-- Reviewing or refactoring existing Terraform/OpenTofu projects
-- Choosing between module patterns or state management approaches
+- Structuring multi-environment GCP deployments
+- Implementing CI/CD with Cloud Build or GitHub Actions
+- Reviewing or refactoring existing OpenTofu/GCP projects
+- Setting up Workload Identity Federation for CI/CD
 
 **Don't use this skill for:**
-- Basic Terraform/OpenTofu syntax questions (Claude knows this)
+- Basic OpenTofu syntax questions (Claude knows this)
 - Provider-specific API reference (link to docs instead)
-- Cloud platform questions unrelated to Terraform/OpenTofu
+- Non-GCP cloud platform questions
+
+## OpenTofu-Unique Features
+
+OpenTofu provides capabilities beyond Terraform. Use these features for enhanced security and flexibility.
+
+### State Encryption (OpenTofu 1.7+)
+
+**Client-side encryption with GCP KMS:**
+
+```hcl
+tofu {
+  encryption {
+    method "gcp_kms" "state_key" {
+      kms_encryption_key = "projects/my-project/locations/global/keyRings/tofu-state/cryptoKeys/state-key"
+    }
+    state {
+      method = method.gcp_kms.state_key
+    }
+    plan {
+      method = method.gcp_kms.state_key
+    }
+  }
+
+  backend "gcs" {
+    bucket = "my-tofu-state"
+    prefix = "prod"
+  }
+}
+```
+
+### Early Variable Evaluation (OpenTofu 1.8+)
+
+**Use variables in backend and module source:**
+
+```hcl
+variable "environment" {
+  type = string
+}
+
+tofu {
+  backend "gcs" {
+    bucket = "tofu-state-${var.environment}"
+    prefix = var.environment
+  }
+}
+```
+
+### Enabled Meta-Argument (OpenTofu 1.11+)
+
+**Cleaner conditional resource creation:**
+
+```hcl
+# ✅ GOOD - enabled meta-argument (OpenTofu 1.11+)
+resource "google_compute_instance" "bastion" {
+  enabled = var.create_bastion
+
+  name         = "bastion-host"
+  machine_type = "e2-micro"
+  zone         = var.zone
+}
+
+# Instead of count = var.create_bastion ? 1 : 0
+```
+
+### Ephemeral Resources (OpenTofu 1.11+)
+
+**Secrets that never touch state:**
+
+```hcl
+ephemeral "google_secret_manager_secret_version" "db_password" {
+  secret = "projects/my-project/secrets/db-password"
+}
+
+resource "google_sql_database_instance" "main" {
+  name             = "main-instance"
+  database_version = "POSTGRES_15"
+  region           = var.region
+
+  settings {
+    tier = "db-f1-micro"
+  }
+
+  # Ephemeral value - never stored in state
+  root_password = ephemeral.google_secret_manager_secret_version.db_password.secret_data
+}
+```
 
 ## Core Principles
 
@@ -31,9 +118,9 @@ Comprehensive Terraform and OpenTofu guidance covering testing, modules, CI/CD, 
 
 | Type | When to Use | Scope |
 |------|-------------|-------|
-| **Resource Module** | Single logical group of connected resources | VPC + subnets, Security group + rules |
-| **Infrastructure Module** | Collection of resource modules for a purpose | Multiple resource modules in one region/account |
-| **Composition** | Complete infrastructure | Spans multiple regions/accounts |
+| **Resource Module** | Single logical group of connected resources | VPC + subnets, Firewall + rules |
+| **Infrastructure Module** | Collection of resource modules for a purpose | Multiple resource modules in one region/project |
+| **Composition** | Complete infrastructure | Spans multiple regions/projects |
 
 **Hierarchy:** Resource → Resource Module → Infrastructure Module → Composition
 
@@ -47,6 +134,7 @@ environments/        # Environment-specific configurations
 modules/            # Reusable modules
 ├── networking/
 ├── compute/
+├── gke/
 └── data/
 
 examples/           # Module usage examples (also serve as tests)
@@ -65,18 +153,20 @@ examples/           # Module usage examples (also serve as tests)
 
 **Resources:**
 ```hcl
-# Good: Descriptive, contextual
-resource "aws_instance" "web_server" { }
-resource "aws_s3_bucket" "application_logs" { }
+# Good: Descriptive, contextual (GCP uses hyphens in resource names)
+resource "google_compute_instance" "web-server" { }
+resource "google_storage_bucket" "application-logs" { }
 
 # Good: "this" for singleton resources (only one of that type)
-resource "aws_vpc" "this" { }
-resource "aws_security_group" "this" { }
+resource "google_compute_network" "this" { }
+resource "google_compute_firewall" "this" { }
 
 # Avoid: Generic names for non-singletons
-resource "aws_instance" "main" { }
-resource "aws_s3_bucket" "bucket" { }
+resource "google_compute_instance" "main" { }
+resource "google_storage_bucket" "bucket" { }
 ```
+
+**GCP Naming Note:** GCP resource names use hyphens (kebab-case), but HCL identifiers use underscores (snake_case).
 
 **Singleton Resources:**
 
@@ -84,13 +174,13 @@ Use `"this"` when your module creates only one resource of that type:
 
 ✅ DO:
 ```hcl
-resource "aws_vpc" "this" {}           # Module creates one VPC
-resource "aws_security_group" "this" {}  # Module creates one SG
+resource "google_compute_network" "this" {}           # Module creates one VPC
+resource "google_compute_firewall" "this" {}          # Module creates one firewall
 ```
 
 ❌ DON'T use "this" for multiple resources:
 ```hcl
-resource "aws_subnet" "this" {}  # If creating multiple subnets
+resource "google_compute_subnetwork" "this" {}  # If creating multiple subnets
 ```
 
 Use descriptive names when creating multiple resources of the same type.
@@ -98,8 +188,8 @@ Use descriptive names when creating multiple resources of the same type.
 **Variables:**
 ```hcl
 # Prefix with context when needed
-var.vpc_cidr_block          # Not just "cidr"
-var.database_instance_class # Not just "instance_class"
+var.vpc_cidr_range              # Not just "cidr"
+var.database_tier               # Not just "tier"
 ```
 
 **Files:**
@@ -115,13 +205,13 @@ var.database_instance_class # Not just "instance_class"
 
 | Your Situation | Recommended Approach | Tools | Cost |
 |----------------|---------------------|-------|------|
-| **Quick syntax check** | Static analysis | `terraform validate`, `fmt` | Free |
+| **Quick syntax check** | Static analysis | `tofu validate`, `fmt` | Free |
 | **Pre-commit validation** | Static + lint | `validate`, `tflint`, `trivy`, `checkov` | Free |
-| **Terraform 1.6+, simple logic** | Native test framework | Built-in `terraform test` | Free-Low |
-| **Pre-1.6, or Go expertise** | Integration testing | Terratest | Low-Med |
-| **Security/compliance focus** | Policy as code | OPA, Sentinel | Free |
+| **OpenTofu 1.6+, simple logic** | Native test framework | Built-in `tofu test` | Free-Low |
+| **Go expertise** | Integration testing | Terratest | Low-Med |
+| **Security/compliance focus** | Policy as code | OPA, Checkov | Free |
 | **Cost-sensitive workflow** | Mock providers (1.7+) | Native tests + mocking | Free |
-| **Multi-cloud, complex** | Full integration | Terratest + real infra | Med-High |
+| **Multi-service, complex** | Full integration | Terratest + real infra | Med-High |
 
 ### Testing Pyramid for Infrastructure
 
@@ -133,17 +223,17 @@ var.database_instance_class # Not just "instance_class"
     /________\
    /          \      Integration Tests (Moderate)
   /____________\     - Module testing in isolation
- /              \    - Real resources in test account
+ /              \    - Real resources in test project
 /________________\   Static Analysis (Cheap)
                      - validate, fmt, lint
-                     - Security scanning
+                     - Security scanning (trivy, checkov)
 ```
 
 ### Native Test Best Practices (1.6+)
 
 **Before generating test code:**
 
-1. **Validate schemas with Terraform MCP:**
+1. **Validate schemas with provider docs:**
    ```
    Search provider docs → Get resource schema → Identify block types
    ```
@@ -157,11 +247,6 @@ var.database_instance_class # Not just "instance_class"
    - Use `for` expressions to iterate
    - Or use `command = apply` to materialize
 
-**Common patterns:**
-- S3 encryption rules: **set** (use for expressions)
-- Lifecycle transitions: **set** (use for expressions)
-- IAM policy statements: **set** (use for expressions)
-
 **For detailed testing guides, see:**
 - **[Testing Frameworks Guide](references/testing-frameworks.md)** - Deep dive into static analysis, native tests, and Terratest
 - **[Quick Reference](references/quick-reference.md#testing-approach-selection)** - Decision flowchart and command cheat sheet
@@ -171,25 +256,24 @@ var.database_instance_class # Not just "instance_class"
 ### Resource Block Ordering
 
 **Strict ordering for consistency:**
-1. `count` or `for_each` FIRST (blank line after)
+1. `count` or `for_each` or `enabled` FIRST (blank line after)
 2. Other arguments
-3. `tags` as last real argument
-4. `depends_on` after tags (if needed)
+3. `labels` as last real argument (GCP uses labels, not tags)
+4. `depends_on` after labels (if needed)
 5. `lifecycle` at the very end (if needed)
 
 ```hcl
 # ✅ GOOD - Correct ordering
-resource "aws_nat_gateway" "this" {
-  count = var.create_nat_gateway ? 1 : 0
+resource "google_compute_router_nat" "this" {
+  enabled = var.create_nat
 
-  allocation_id = aws_eip.this[0].id
-  subnet_id     = aws_subnet.public[0].id
+  name                               = "${var.name}-nat"
+  router                             = google_compute_router.this.name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
 
-  tags = {
-    Name = "${var.name}-nat"
-  }
-
-  depends_on = [aws_internet_gateway.this]
+  depends_on = [google_compute_router.this]
 
   lifecycle {
     create_before_destroy = true
@@ -207,7 +291,7 @@ resource "aws_nat_gateway" "this" {
 
 ```hcl
 variable "environment" {
-  description = "Environment name for resource tagging"
+  description = "Environment name for resource labeling"
   type        = string
   default     = "dev"
 
@@ -228,7 +312,7 @@ variable "environment" {
 
 | Scenario | Use | Why |
 |----------|-----|-----|
-| Boolean condition (create or don't) | `count = condition ? 1 : 0` | Simple on/off toggle |
+| Boolean condition (create or don't) | `enabled` (1.11+) or `count = condition ? 1 : 0` | Simple on/off toggle |
 | Simple numeric replication | `count = 3` | Fixed number of identical resources |
 | Items may be reordered/removed | `for_each = toset(list)` | Stable resource addresses |
 | Reference by key | `for_each = map` | Named access to resources |
@@ -238,75 +322,68 @@ variable "environment" {
 
 **Boolean conditions:**
 ```hcl
-# ✅ GOOD - Boolean condition
-resource "aws_nat_gateway" "this" {
-  count = var.create_nat_gateway ? 1 : 0
+# ✅ BEST - enabled meta-argument (OpenTofu 1.11+)
+resource "google_compute_router_nat" "this" {
+  enabled = var.create_nat
+  # ...
+}
+
+# ✅ GOOD - Boolean condition (pre-1.11)
+resource "google_compute_router_nat" "this" {
+  count = var.create_nat ? 1 : 0
   # ...
 }
 ```
 
 **Stable addressing with for_each:**
 ```hcl
-# ✅ GOOD - Removing "us-east-1b" only affects that subnet
-resource "aws_subnet" "private" {
-  for_each = toset(var.availability_zones)
+# ✅ GOOD - Removing "us-central1-b" only affects that subnet
+resource "google_compute_subnetwork" "private" {
+  for_each = toset(var.zones)
 
-  availability_zone = each.key
+  name   = "private-${each.key}"
+  region = var.region
   # ...
 }
 
-# ❌ BAD - Removing middle AZ recreates all subsequent subnets
-resource "aws_subnet" "private" {
-  count = length(var.availability_zones)
+# ❌ BAD - Removing middle zone recreates all subsequent subnets
+resource "google_compute_subnetwork" "private" {
+  count = length(var.zones)
 
-  availability_zone = var.availability_zones[count.index]
+  name = "private-${var.zones[count.index]}"
   # ...
 }
 ```
 
 **For migration guides and detailed examples, see:** [Code Patterns: Count vs For_Each](references/code-patterns.md#count-vs-for_each-deep-dive)
 
-## Locals for Dependency Management
+## GCP Required Labels
 
-**Use locals to ensure correct resource deletion order:**
+**Always apply required labels to all resources:**
 
 ```hcl
-# Problem: Subnets might be deleted after CIDR blocks, causing errors
-# Solution: Use try() in locals to hint deletion order
-
 locals {
-  # References secondary CIDR first, falling back to VPC
-  # Forces Terraform to delete subnets before CIDR association
-  vpc_id = try(
-    aws_vpc_ipv4_cidr_block_association.this[0].vpc_id,
-    aws_vpc.this.id,
-    ""
-  )
+  required_labels = {
+    environment = var.environment      # dev, staging, prod
+    project     = var.project_name     # application/service name
+    managed-by  = "opentofu"           # always "opentofu"
+    owner       = var.owner            # team or individual
+    cost-center = var.cost_center      # billing allocation
+  }
 }
 
-resource "aws_vpc" "this" {
-  cidr_block = "10.0.0.0/16"
-}
+resource "google_compute_instance" "web-server" {
+  name         = "web-server"
+  machine_type = "e2-medium"
+  zone         = var.zone
 
-resource "aws_vpc_ipv4_cidr_block_association" "this" {
-  count = var.add_secondary_cidr ? 1 : 0
+  # ... other config ...
 
-  vpc_id     = aws_vpc.this.id
-  cidr_block = "10.1.0.0/16"
-}
-
-resource "aws_subnet" "public" {
-  vpc_id     = local.vpc_id  # Uses local, not direct reference
-  cidr_block = "10.1.0.0/24"
+  labels = local.required_labels
 }
 ```
 
-**Why this matters:**
-- Prevents deletion errors when destroying infrastructure
-- Ensures correct dependency order without explicit `depends_on`
-- Particularly useful for VPC configurations with secondary CIDR blocks
-
-**For detailed examples, see:** [Code Patterns: Locals for Dependency Management](references/code-patterns.md#locals-for-dependency-management)
+**For detailed conventions, see:** [Conventions Reference](references/conventions.md)
 
 ## Module Development
 
@@ -324,6 +401,17 @@ my-module/
 │   └── complete/       # Full-featured example
 └── tests/              # Test files
     └── module_test.tftest.hcl  # Or .go
+```
+
+### Module Naming Convention
+
+```
+tofu-google-<NAME>
+
+Examples:
+tofu-google-vpc
+tofu-google-gke
+tofu-google-cloudsql
 ```
 
 ### Best Practices Summary
@@ -350,19 +438,20 @@ my-module/
 ### Recommended Workflow Stages
 
 1. **Validate** - Format check + syntax validation + linting
-2. **Test** - Run automated tests (native or Terratest)
-3. **Plan** - Generate and review execution plan
-4. **Apply** - Execute changes (with approvals for production)
+2. **Security Scan** - Trivy + Checkov for IaC scanning
+3. **Test** - Run automated tests (native or Terratest)
+4. **Plan** - Generate and review execution plan
+5. **Apply** - Execute changes (with approvals for production)
 
 ### Cost Optimization Strategy
 
 1. **Use mocking for PR validation** (free)
 2. **Run integration tests only on main branch** (controlled cost)
 3. **Implement auto-cleanup** (prevent orphaned resources)
-4. **Tag all test resources** (track spending)
+4. **Label all test resources** (track spending)
 
 **For complete CI/CD templates, see:**
-- **[CI/CD Workflows Guide](references/ci-cd-workflows.md)** - GitHub Actions, GitLab CI, Atlantis integration, cost optimization
+- **[CI/CD Workflows Guide](references/ci-cd-workflows.md)** - Cloud Build, GitHub Actions with Workload Identity Federation
 - **[Quick Reference](references/quick-reference.md#troubleshooting-guide)** - Common CI/CD issues and solutions
 
 ## Security & Compliance
@@ -370,27 +459,45 @@ my-module/
 ### Essential Security Checks
 
 ```bash
-# Static security scanning
-trivy config .
-checkov -d .
+# Static security scanning (IaC)
+trivy config . --severity CRITICAL,HIGH
+checkov -d . --framework terraform
+
+# Scan plan file before apply
+tofu plan -out=tfplan
+tofu show -json tfplan > tfplan.json
+checkov -f tfplan.json
+
+# Cloud posture assessment (post-deploy)
+prowler gcp --project-id my-project
 ```
+
+### Three-Tier Security Scanning
+
+| Tool | Type | GCP Checks | When to Use |
+|------|------|-----------|-------------|
+| **Trivy** | IaC static analysis | AVD-GCP-* checks | Pre-commit, CI/CD - scan code before apply |
+| **Checkov** | IaC policy scanner | CKV_GCP_* checks | CI/CD - policy compliance, graph analysis |
+| **Prowler** | Cloud posture | 100+ GCP controls | Post-deploy - audit deployed infrastructure |
 
 ### Common Issues to Avoid
 
 ❌ **Don't:**
 - Store secrets in variables
-- Use default VPC
+- Use default networks
 - Skip encryption
-- Open security groups to 0.0.0.0/0
+- Open firewall rules to 0.0.0.0/0
+- Use primitive IAM roles (Owner, Editor, Viewer)
 
 ✅ **Do:**
-- Use AWS Secrets Manager / Parameter Store
-- Create dedicated VPCs
-- Enable encryption at rest
-- Use least-privilege security groups
+- Use Google Secret Manager
+- Create dedicated VPC networks
+- Enable encryption at rest (CMEK where required)
+- Use least-privilege firewall rules
+- Use predefined IAM roles
 
 **For detailed security guidance, see:**
-- **[Security & Compliance Guide](references/security-compliance.md)** - Trivy/Checkov integration, secrets management, state file security, compliance testing
+- **[Security & Compliance Guide](references/security-compliance.md)** - Trivy/Checkov/Prowler integration, secrets management, state encryption
 
 ## Version Management
 
@@ -406,8 +513,8 @@ version = ">= 5.0"     # Minimum (risky - breaking changes)
 
 | Component | Strategy | Example |
 |-----------|----------|---------|
-| **Terraform** | Pin minor version | `required_version = "~> 1.9"` |
-| **Providers** | Pin major version | `version = "~> 5.0"` |
+| **OpenTofu** | Pin minor version | `required_version = "~> 1.11"` |
+| **Providers** | Pin major version | `version = "~> 6.0"` |
 | **Modules (prod)** | Pin exact version | `version = "5.1.2"` |
 | **Modules (dev)** | Allow patch updates | `version = "~> 5.1"` |
 
@@ -415,39 +522,41 @@ version = ">= 5.0"     # Minimum (risky - breaking changes)
 
 ```bash
 # Lock versions initially
-terraform init              # Creates .terraform.lock.hcl
+tofu init              # Creates .terraform.lock.hcl
 
 # Update to latest within constraints
-terraform init -upgrade     # Updates providers
+tofu init -upgrade     # Updates providers
 
 # Review and test
-terraform plan
+tofu plan
 ```
 
 **For detailed version management, see:** [Code Patterns: Version Management](references/code-patterns.md#version-management)
 
-## Modern Terraform Features (1.0+)
+## OpenTofu Version Features
 
 ### Feature Availability by Version
 
 | Feature | Version | Use Case |
 |---------|---------|----------|
-| `try()` function | 0.13+ | Safe fallbacks, replaces `element(concat())` |
+| `try()` function | 1.0+ | Safe fallbacks |
 | `nullable = false` | 1.1+ | Prevent null values in variables |
 | `moved` blocks | 1.1+ | Refactor without destroy/recreate |
 | `optional()` with defaults | 1.3+ | Optional object attributes |
 | Native testing | 1.6+ | Built-in test framework |
 | Mock providers | 1.7+ | Cost-free unit testing |
-| Provider functions | 1.8+ | Provider-specific data transformation |
+| **State encryption** | 1.7+ | Client-side encryption with GCP KMS |
+| **Early variable evaluation** | 1.8+ | Variables in backend/module source |
 | Cross-variable validation | 1.9+ | Validate relationships between variables |
-| Write-only arguments | 1.11+ | Secrets never stored in state |
+| **`enabled` meta-argument** | 1.11+ | Cleaner conditional resources |
+| **Ephemeral resources** | 1.11+ | Secrets never stored in state |
 
 ### Quick Examples
 
 ```hcl
-# try() - Safe fallbacks (0.13+)
-output "sg_id" {
-  value = try(aws_security_group.this[0].id, "")
+# try() - Safe fallbacks (1.0+)
+output "instance_id" {
+  value = try(google_compute_instance.this[0].id, "")
 }
 
 # optional() - Optional attributes with defaults (1.3+)
@@ -469,36 +578,21 @@ variable "backup_days" {
 }
 ```
 
-**For complete patterns and examples, see:** [Code Patterns: Modern Terraform Features](references/code-patterns.md#modern-terraform-features-10)
-
-## Version-Specific Guidance
-
-### Terraform 1.0-1.5
-- Use Terratest for testing
-- No native testing framework available
-- Focus on static analysis and plan validation
-
-### Terraform 1.6+ / OpenTofu 1.6+
-- **New:** Native `terraform test` / `tofu test` command
-- Consider migrating from external frameworks for simple tests
-- Keep Terratest only for complex integration tests
-
-### Terraform 1.7+ / OpenTofu 1.7+
-- **New:** Mock providers for unit testing
-- Reduce cost by mocking external dependencies
-- Use real integration tests for final validation
-
-### Terraform vs OpenTofu
-
-Both are fully supported by this skill. For licensing, governance, and feature comparison, see [Quick Reference: Terraform vs OpenTofu](references/quick-reference.md#terraform-vs-opentofu-comparison).
+**For complete patterns and examples, see:** [Code Patterns: Modern OpenTofu Features](references/code-patterns.md#modern-terraform-features-10)
 
 ## Additional Resources
 
-**Official:** [Terraform Testing](https://developer.hashicorp.com/terraform/language/tests) | [OpenTofu Docs](https://opentofu.org/docs/) | [HashiCorp Best Practices](https://developer.hashicorp.com/terraform/cloud-docs/recommended-practices)
+**Official:** [OpenTofu Docs](https://opentofu.org/docs/) | [OpenTofu Testing](https://opentofu.org/docs/language/tests/) | [Google Cloud Best Practices](https://cloud.google.com/docs/terraform/best-practices)
 
-**Community:** [terraform-best-practices.com](https://terraform-best-practices.com) | [Terratest](https://terratest.gruntwork.io/docs/) | [Google Cloud Best Practices](https://cloud.google.com/docs/terraform/best-practices)
+**Community:** [terraform-best-practices.com](https://terraform-best-practices.com) | [Terratest](https://terratest.gruntwork.io/docs/)
 
-**Tools:** [pre-commit-terraform](https://github.com/antonbabenko/pre-commit-terraform) | [terraform-docs](https://terraform-docs.io/) | [terraform-switcher](https://github.com/warrensbox/terraform-switcher) | [TFLint](https://github.com/terraform-linters/tflint) | [Trivy](https://github.com/aquasecurity/trivy)
+**Tools:** [pre-commit-terraform](https://github.com/antonbabenko/pre-commit-terraform) | [terraform-docs](https://terraform-docs.io/) | [TFLint](https://github.com/terraform-linters/tflint) | [Trivy](https://github.com/aquasecurity/trivy) | [Checkov](https://www.checkov.io/) | [Prowler](https://github.com/prowler-cloud/prowler)
+
+**Ecosystem:**
+- [Terragrunt](https://terragrunt.gruntwork.io/) - Orchestration tool for DRY configurations
+- [Atlantis](https://www.runatlantis.io/) - Pull Request automation
+- [Infracost](https://www.infracost.io/) - Cloud cost estimates in PRs
+- [tofuenv](https://github.com/tofuutils/tofuenv) - OpenTofu version manager
 
 ## Detailed Guides
 
@@ -507,9 +601,11 @@ This skill uses **progressive disclosure** - essential information is in this ma
 📚 **Reference Files:**
 - **[Testing Frameworks](references/testing-frameworks.md)** - In-depth guide to static analysis, native tests, and Terratest
 - **[Module Patterns](references/module-patterns.md)** - Module structure, variable/output best practices, ✅ DO vs ❌ DON'T patterns
-- **[CI/CD Workflows](references/ci-cd-workflows.md)** - GitHub Actions, GitLab CI templates, cost optimization, automated cleanup
-- **[Security & Compliance](references/security-compliance.md)** - Trivy/Checkov integration, secrets management, compliance testing
+- **[CI/CD Workflows](references/ci-cd-workflows.md)** - Cloud Build, GitHub Actions with Workload Identity Federation
+- **[Security & Compliance](references/security-compliance.md)** - Trivy/Checkov/Prowler integration, secrets management, state encryption
 - **[Quick Reference](references/quick-reference.md)** - Command cheat sheets, decision flowcharts, troubleshooting guide
+- **[Conventions](references/conventions.md)** - Required GCP labels, naming conventions, organization templates
+- **[Code Patterns](references/code-patterns.md)** - Block ordering, count vs for_each, modern OpenTofu features
 
 **How to use:** When you need detailed information on a topic, reference the appropriate guide. Claude will load it on demand to provide comprehensive guidance.
 
@@ -523,21 +619,20 @@ This skill is licensed under the **Apache License 2.0**. See the LICENSE file fo
 
 This skill synthesizes best practices from:
 - **[terraform-best-practices.com](https://terraform-best-practices.com)** by Anton Babenko
-- **[Compliance.tf](https://compliance.tf)** - Terraform Compliance for Cloud-Native Enterprise (production experience)
-- Official HashiCorp Terraform and OpenTofu documentation
-- Google Cloud Terraform Best Practices
-- AWS Terraform Best Practices
+- **[Compliance.tf](https://compliance.tf)** - OpenTofu Compliance for Cloud-Native Enterprise (production experience)
+- Official OpenTofu documentation
+- Google Cloud Terraform/OpenTofu Best Practices
 - Community contributions
 
 ### Attribution
 
 If you create derivative works or skills based on this skill, please include:
 ```
-Based on terraform-skill by Anton Babenko
+Based on opentofu-skill-gcp by Anton Babenko
 https://github.com/antonbabenko/terraform-skill
 terraform-best-practices.com | Compliance.tf
 ```
 
 ### About the author
 
-Anton Babenko ([@antonbabenko on X](https://x.com/antonbabenko)) is an AWS Hero and the creator of [terraform-best-practices.com](https://terraform-best-practices.com). Anton is the founder of [Compliance.tf](https://compliance.tf), which helps teams build compliant Terraform for cloud-native enterprises. Anton also curates [weekly.tf](https://weekly.tf), the Terraform Weekly newsletter, and maintains the [terraform-aws-modules](https://github.com/terraform-aws-modules) project.
+Anton Babenko ([@antonbabenko on X](https://x.com/antonbabenko)) is an AWS Hero and the creator of [terraform-best-practices.com](https://terraform-best-practices.com). Anton is the founder of [Compliance.tf](https://compliance.tf), which helps teams build compliant OpenTofu for cloud-native enterprises. Anton also curates [weekly.tf](https://weekly.tf), the Terraform Weekly newsletter, and maintains the [terraform-aws-modules](https://github.com/terraform-aws-modules) project.

@@ -1,7 +1,7 @@
 # Quick Reference
 
-> **Part of:** [terraform-skill](../SKILL.md)
-> **Purpose:** Command cheat sheets and decision flowcharts
+> **Part of:** [opentofu-skill-gcp](../SKILL.md)
+> **Purpose:** Command cheat sheets and decision flowcharts for OpenTofu/GCP
 
 This document provides quick lookup tables, command references, and decision flowcharts for rapid consultation during development.
 
@@ -14,6 +14,7 @@ This document provides quick lookup tables, command references, and decision flo
 3. [Version-Specific Guidance](#version-specific-guidance)
 4. [Troubleshooting Guide](#troubleshooting-guide)
 5. [Migration Paths](#migration-paths)
+6. [GCS Backend Configuration](#gcs-backend-configuration)
 
 ---
 
@@ -21,44 +22,88 @@ This document provides quick lookup tables, command references, and decision flo
 
 ### Static Analysis
 
-Works with both `terraform` and `tofu` commands:
-
 ```bash
 # Format and validate
-terraform fmt -recursive -check    # or: tofu fmt -recursive -check
-terraform validate                 # or: tofu validate
+tofu fmt -recursive -check
+tofu validate
 
-# Linting
-tflint --init && tflint
+# Linting with GCP rules
+tflint --init
+tflint --enable-plugin=google
 
 # Security scanning
-checkov -d .
+trivy config . --severity CRITICAL,HIGH
+checkov -d . --framework terraform --check CKV_GCP*
 ```
 
 ### Native Tests (1.6+)
 
 ```bash
 # Run all tests
-terraform test                     # or: tofu test
+tofu test
 
 # Run tests in specific directory
-terraform test -test-directory=tests/unit/
+tofu test -test-directory=tests/unit/
 
 # Verbose output
-terraform test -verbose
+tofu test -verbose
+
+# Run specific test file
+tofu test -filter=tests/vpc_test.tftest.hcl
 ```
 
-### Plan Validation
+### Plan and Apply
 
 ```bash
 # Generate and review plan
-terraform plan -out tfplan         # or: tofu plan -out tfplan
+tofu plan -out tfplan
 
-# Convert plan to pretty JSON
-terraform show -json tfplan | jq -r '.' > tfplan.json
+# Convert plan to JSON for analysis
+tofu show -json tfplan > tfplan.json
 
 # Check for specific changes
-terraform show tfplan | grep "will be created"
+tofu show tfplan | grep "will be created"
+
+# Apply with plan file
+tofu apply tfplan
+
+# Apply with auto-approve (CI/CD only)
+tofu apply -auto-approve
+```
+
+### State Management
+
+```bash
+# List resources in state
+tofu state list
+
+# Show specific resource
+tofu state show google_compute_instance.web
+
+# Move resource (refactoring)
+tofu state mv google_compute_instance.old google_compute_instance.new
+
+# Import existing resource
+tofu import google_compute_instance.web projects/my-project/zones/us-central1-a/instances/web
+
+# Remove from state (doesn't destroy)
+tofu state rm google_compute_instance.web
+```
+
+### Workspace Management
+
+```bash
+# List workspaces
+tofu workspace list
+
+# Create new workspace
+tofu workspace new staging
+
+# Select workspace
+tofu workspace select prod
+
+# Show current workspace
+tofu workspace show
 ```
 
 ---
@@ -68,27 +113,23 @@ terraform show tfplan | grep "will be created"
 ### Testing Approach Selection
 
 ```
-Need to test Terraform/OpenTofu code?
+Need to test OpenTofu code?
 │
 ├─ Just syntax/format?
-│  └─ terraform/tofu validate + fmt
+│  └─ tofu validate + fmt
 │
 ├─ Static security scan?
 │  └─ trivy + checkov
 │
-├─ Terraform/OpenTofu 1.6+?
+├─ OpenTofu 1.6+?
 │  ├─ Simple logic test?
-│  │  └─ Native terraform/tofu test
+│  │  └─ Native tofu test
 │  │
 │  └─ Complex integration?
 │     └─ Terratest
 │
-└─ Pre-1.6?
-   ├─ Go team?
-   │  └─ Terratest
-   │
-   └─ Neither?
-      └─ Plan to upgrade Terraform/OpenTofu
+└─ Complex multi-service?
+   └─ Terratest with GCP SDK
 ```
 
 ### Module Development Workflow
@@ -106,6 +147,7 @@ Need to test Terraform/OpenTofu code?
 
 3. Test
    ├─ Static analysis (validate, fmt, lint)
+   ├─ Security scan (trivy, checkov)
    ├─ Unit tests (native or Terratest)
    └─ Integration tests (examples/)
 
@@ -120,66 +162,62 @@ Need to test Terraform/OpenTofu code?
    └─ Announce changes
 ```
 
+### GCP Resource Selection
+
+```
+Need compute resources?
+│
+├─ Containerized workload?
+│  ├─ Kubernetes needed?
+│  │  └─ GKE (google_container_cluster)
+│  │
+│  └─ Simple container?
+│     └─ Cloud Run (google_cloud_run_service)
+│
+├─ VM needed?
+│  ├─ Single instance?
+│  │  └─ Compute Instance (google_compute_instance)
+│  │
+│  └─ Auto-scaling?
+│     └─ Instance Group + Autoscaler
+│
+└─ Serverless?
+   └─ Cloud Functions (google_cloudfunctions2_function)
+```
+
 ---
 
 ## Version-Specific Guidance
 
-### Terraform 1.0-1.5
+### OpenTofu 1.6+
 
-- ❌ No native testing framework
-- ✅ Use Terratest
-- ✅ Focus on static analysis
-- ✅ terraform plan validation
-
-### Terraform 1.6+ / OpenTofu 1.6+
-
-- ✅ NEW: Native `terraform test` / `tofu test`
+- ✅ Native `tofu test` command
+- ✅ Built-in test framework
 - ✅ Consider migrating simple tests from Terratest
-- ✅ Keep Terratest for complex integration
-- ✅ All Terraform 1.0+ features available
 
-### Terraform 1.7+ / OpenTofu 1.7+
+### OpenTofu 1.7+
 
-- ✅ NEW: Mock providers for unit testing
+- ✅ Mock providers for unit testing
+- ✅ **State encryption** with GCP KMS
 - ✅ Reduce costs with mocking
-- ✅ Use real integration tests for final validation
 - ✅ Faster test iteration
 
-### Terraform vs OpenTofu Comparison
+### OpenTofu 1.8+
 
-Both Terraform and OpenTofu are fully supported by this skill. The choice depends on your requirements:
+- ✅ **Early variable evaluation**
+- ✅ Variables in backend configuration
+- ✅ Variables in module source
 
-**Quick Decision Matrix:**
+### OpenTofu 1.9+
 
-| Factor | Terraform | OpenTofu |
-|--------|-----------|----------|
-| **Licensing** | Business Source License (BSL) 1.1 | Mozilla Public License 2.0 (MPL 2.0) |
-| **Governance** | HashiCorp (single vendor) | Linux Foundation (community-driven) |
-| **Latest Version** | 1.14+ | 1.11+ |
-| **Native Testing** | 1.6+ | 1.6+ |
-| **Mock Providers** | 1.7+ | 1.7+ |
-| **Feature Parity** | Reference implementation | Compatible fork with some additions |
-| **Enterprise Support** | HCP Terraform, Terraform Cloud | Multiple vendors |
-| **Migration Path** | N/A | Drop-in replacement for Terraform ≤1.5 |
+- ✅ Cross-variable validation
+- ✅ Reference other variables in validation blocks
 
-**When to choose Terraform:**
-- Using HashiCorp Terraform Cloud or HCP Terraform
-- Enterprise support contract with HashiCorp
-- Need absolute latest features first
+### OpenTofu 1.11+
 
-**When to choose OpenTofu:**
-- Prefer open-source governance model
-- Want to avoid vendor lock-in concerns
-- Building on community-driven development
-- BSL 1.1 license doesn't fit your use case
-
-**For this skill:**
-- Commands are shown for both: `terraform` and `tofu`
-- Most patterns work identically, though differences exist (see release notes)
-- Version-specific features noted (1.6+, 1.7+, etc.)
-- **Note:** Since OpenTofu 1.6, the platforms have diverged with unique features
-
-**When creating modules, Claude will ask your preference** to generate appropriate commands and documentation.
+- ✅ **`enabled` meta-argument** for cleaner conditionals
+- ✅ **Ephemeral resources** - secrets never in state
+- ✅ Write-only arguments
 
 ---
 
@@ -189,67 +227,81 @@ Both Terraform and OpenTofu are fully supported by this skill. The choice depend
 
 **Symptoms:**
 - Tests pass on your machine
-- Same tests fail in GitHub Actions/GitLab CI
+- Same tests fail in Cloud Build/GitHub Actions
 
 **Common Causes:**
-1. Different Terraform/provider versions
+1. Different OpenTofu/provider versions
 2. Different environment variables
-3. Different AWS credentials/permissions
+3. Different GCP credentials/permissions
 
 **Solution:**
 
 ```hcl
 # versions.tf - Pin versions explicitly
-terraform {
-  required_version = ">= 1.6.0"
+tofu {
+  required_version = "~> 1.11"
 
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"  # Pin to major version
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
     }
   }
 }
+```
+
+### Issue: State locking errors
+
+**Symptoms:**
+- Error: "Error acquiring the state lock"
+- Concurrent runs failing
+
+**Solution:**
+
+```bash
+# Force unlock (use with caution!)
+tofu force-unlock LOCK_ID
+
+# In CI, use lock timeout
+tofu apply -lock-timeout=10m tfplan
 ```
 
 ### Issue: Parallel tests conflict
 
 **Symptoms:**
 - Tests fail when run in parallel
-- Error: "ResourceAlreadyExistsException"
+- Error: "Resource already exists"
 
 **Cause:** Resource naming collisions
 
 **Solution:**
 
 ```go
-// Use unique identifiers
+// In Terratest - use unique identifiers
 import "github.com/gruntwork-io/terratest/modules/random"
 
 uniqueId := random.UniqueId()
-bucketName := fmt.Sprintf("test-bucket-%s", uniqueId)
+instanceName := fmt.Sprintf("test-instance-%s", uniqueId)
 ```
 
 ### Issue: High test costs
 
 **Symptoms:**
-- AWS bill increasing from tests
-- Many orphaned resources in test account
+- GCP bill increasing from tests
+- Many orphaned resources in test project
 
 **Solutions:**
 
-1. **Use mocking for unit tests** (Terraform 1.7+)
+1. **Use mocking for unit tests** (OpenTofu 1.7+)
    ```hcl
-   mock_provider "aws" { ... }
+   mock_provider "google" { ... }
    ```
 
-2. **Implement resource TTL tags**
-   ```go
-   Vars: map[string]interface{}{
-       "tags": map[string]string{
-           "Environment": "test",
-           "TTL":         "2h",
-       },
+2. **Implement resource TTL labels**
+   ```hcl
+   labels = {
+     environment = "test"
+     ttl         = "2h"
    }
    ```
 
@@ -258,14 +310,45 @@ bucketName := fmt.Sprintf("test-bucket-%s", uniqueId)
    if: github.ref == 'refs/heads/main'
    ```
 
-4. **Use smaller instance types**
+4. **Use smaller machine types**
    ```hcl
-   instance_type = "t3.micro"  # Not "m5.large"
+   machine_type = "e2-micro"  # Not "n2-standard-4"
    ```
 
-5. **Share test resources when safe**
-   - VPCs, security groups (rarely change)
-   - Don't share: instances, databases (change often)
+### Issue: GCS backend access denied
+
+**Symptoms:**
+- Error: "Error configuring backend"
+- 403 Forbidden on state bucket
+
+**Solution:**
+
+```bash
+# Verify service account permissions
+gcloud storage buckets get-iam-policy gs://my-tofu-state
+
+# Grant access
+gcloud storage buckets add-iam-policy-binding gs://my-tofu-state \
+  --member="serviceAccount:my-sa@project.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+```
+
+### Issue: KMS encryption errors
+
+**Symptoms:**
+- Error: "Error encrypting state"
+- KMS key access denied
+
+**Solution:**
+
+```hcl
+# Grant encrypt/decrypt permissions
+resource "google_kms_crypto_key_iam_member" "state" {
+  crypto_key_id = google_kms_crypto_key.state.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${var.tofu_service_account}"
+}
+```
 
 ---
 
@@ -275,13 +358,14 @@ bucketName := fmt.Sprintf("test-bucket-%s", uniqueId)
 
 **Phase 1:** Static analysis
 ```bash
-terraform validate
-terraform fmt -check
+tofu validate
+tofu fmt -check
+trivy config .
 ```
 
 **Phase 2:** Plan review
 ```bash
-terraform plan -out=tfplan
+tofu plan -out=tfplan
 # Manual review
 ```
 
@@ -290,7 +374,7 @@ terraform plan -out=tfplan
 - OR Terratest
 
 **Phase 4:** CI/CD integration
-- GitHub Actions / GitLab CI
+- Cloud Build / GitHub Actions
 - Automated apply on main branch
 
 ### From Terratest → Native Tests (1.6+)
@@ -300,7 +384,7 @@ terraform plan -out=tfplan
 1. **Keep Terratest for:**
    - Complex integration tests
    - Multi-step workflows
-   - Cross-provider tests
+   - Cross-service tests
 
 2. **Migrate to native tests:**
    - Simple unit tests
@@ -322,31 +406,83 @@ tests/
     └── complete_test.go
 ```
 
-### From Terraform → OpenTofu
+---
 
-**Good news:** OpenTofu is a drop-in replacement!
+## GCS Backend Configuration
 
-1. **No code changes needed**
-   - All Terraform syntax works
-   - Same provider ecosystem
-   - Compatible state files
+### Basic GCS Backend
 
-2. **Update CI/CD:**
-   ```bash
-   # Replace
-   terraform init
-   terraform plan
-   terraform apply
+```hcl
+tofu {
+  backend "gcs" {
+    bucket = "my-project-tofu-state"
+    prefix = "prod"
+  }
+}
+```
 
-   # With
-   tofu init
-   tofu plan
-   tofu apply
-   ```
+### With State Encryption (OpenTofu 1.7+)
 
-3. **Update documentation:**
-   - README mentions OpenTofu compatibility
-   - CI/CD workflows use `tofu` command
+```hcl
+tofu {
+  encryption {
+    method "gcp_kms" "state_key" {
+      kms_encryption_key = "projects/my-project/locations/global/keyRings/tofu-state/cryptoKeys/state-key"
+    }
+    state {
+      method = method.gcp_kms.state_key
+    }
+    plan {
+      method = method.gcp_kms.state_key
+    }
+  }
+
+  backend "gcs" {
+    bucket = "my-project-tofu-state"
+    prefix = "prod"
+  }
+}
+```
+
+### With Variable Interpolation (OpenTofu 1.8+)
+
+```hcl
+variable "environment" {
+  type = string
+}
+
+tofu {
+  backend "gcs" {
+    bucket = "my-project-tofu-state"
+    prefix = var.environment
+  }
+}
+```
+
+### State Bucket Setup
+
+```hcl
+# Create state bucket with security controls
+resource "google_storage_bucket" "tofu_state" {
+  name     = "${var.project_id}-tofu-state"
+  location = var.region
+
+  versioning {
+    enabled = true
+  }
+
+  uniform_bucket_level_access = true
+
+  lifecycle_rule {
+    condition {
+      num_newer_versions = 5
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+```
 
 ---
 
@@ -357,204 +493,44 @@ tests/
 Run these commands before every commit:
 
 ```bash
-# Format all Terraform files
-terraform fmt -recursive
+# Format all OpenTofu files
+tofu fmt -recursive
 
 # Validate configuration
-terraform validate
+tofu validate
+
+# Security scan
+trivy config . --severity CRITICAL,HIGH
 ```
 
 ### Naming Convention Review
 
-- [ ] All identifiers use `_` not `-`
-- [ ] No resource names repeat resource type (no `aws_vpc.main_vpc`)
+- [ ] GCP resource names use hyphens (kebab-case)
+- [ ] HCL identifiers use underscores (snake_case)
+- [ ] Resource names don't repeat resource type (no `google_compute_network.main_network`)
+- [ ] Resource names use singular nouns (not `google_compute_instance.web_servers`)
 - [ ] Single-instance resources named `this` or descriptive name
 - [ ] Variables have plural names for lists/maps (`subnet_ids` not `subnet_id`)
+- [ ] Variable names avoid double negatives (use `enabled` not `disabled`)
 - [ ] All variables have descriptions
 - [ ] All outputs have descriptions
-- [ ] Output names follow `{name}_{type}_{attribute}` pattern
-- [ ] No double negatives in variable names
 
 ### Code Structure Review
 
-- [ ] `count`/`for_each` at top of resource blocks (blank line after)
-- [ ] `tags` as last real argument in resources
-- [ ] `depends_on` after tags (if used)
+- [ ] `count`/`for_each`/`enabled` at top of resource blocks (blank line after)
+- [ ] `labels` as last real argument in resources
+- [ ] `depends_on` after labels (if used)
 - [ ] `lifecycle` at end of resource (if used)
-- [ ] Variables ordered: description → type → default → sensitive → nullable → validation
-- [ ] Only `#` comments used (no `//` or `/* */`)
+- [ ] Variables ordered: description → type → default → validation → nullable
 
-### Modern Features Check
+### GCP-Specific Review
 
-- [ ] Using `try()` not `element(concat())`
-- [ ] Secrets use write-only arguments or external data sources (not in state)
-- [ ] `nullable = false` set on non-null variables
-- [ ] `optional()` used in object types where applicable (Terraform 1.3+)
-- [ ] Variable validation blocks added where constraints needed
-- [ ] Consider cross-variable validation for related variables (Terraform 1.9+)
-
-### Architecture Review
-
-- [ ] `terraform.tfvars` only at composition level (not in modules)
-- [ ] Remote state configured (never local state)
-- [ ] Resource modules don't hardcode values (use variables/data sources)
-- [ ] `terraform_remote_state` used for cross-composition dependencies
-- [ ] File structure follows standard: main.tf, variables.tf, outputs.tf, versions.tf
-
-### Documentation Check
-
-Required documentation for all modules:
-
-- [ ] **README.md exists** with absolute links (Terraform Registry compatibility)
-- [ ] **All variables documented** in README with descriptions and types
-- [ ] **All outputs documented** in README with descriptions
-- [ ] **Usage examples provided** showing how to use the module
-- [ ] **Version requirements specified** (Terraform version, provider versions)
-
----
-
-## Version Management Quick Reference
-
-### Constraint Syntax
-
-| Syntax | Meaning | Use Case |
-|--------|---------|----------|
-| `"5.0.0"` | Exact version | Avoid (inflexible) |
-| `"~> 5.0"` | Pessimistic (5.0.x) | Recommended for stability |
-| `"~> 5.0.1"` | Pessimistic (5.0.x where x >= 1) | Specific patch minimum |
-| `">= 5.0, < 6.0"` | Range | Any 5.x version |
-| `">= 5.0"` | Minimum | Risky (breaking changes) |
-
-### Strategy by Component
-
-| Component | Recommendation | Example |
-|-----------|----------------|---------|
-| **Terraform** | Pin minor, allow patch | `required_version = "~> 1.9"` |
-| **Providers** | Pin major, allow minor/patch | `version = "~> 5.0"` |
-| **Modules (prod)** | Pin exact version | `version = "5.1.2"` |
-| **Modules (dev)** | Allow patch updates | `version = "~> 5.1"` |
-
-### Update Workflow
-
-```bash
-# Step 1: Lock versions initially
-terraform init              # Creates .terraform.lock.hcl
-
-# Step 2: Update to latest within constraints
-terraform init -upgrade     # Updates providers
-
-# Step 3: Review changes
-terraform plan
-
-# Step 4: Commit lock file
-git add .terraform.lock.hcl
-git commit -m "Update provider versions"
-```
-
-### Update Strategy
-
-**Security patches:**
-- Update immediately
-- Test: dev → stage → prod
-- Prioritize Terraform core and provider updates
-
-**Minor versions:**
-- Regular maintenance (monthly/quarterly)
-- Review changelog for breaking changes
-- Test thoroughly before production
-
-**Major versions:**
-- Planned upgrade cycles
-- Dedicated testing period
-- May require code changes
-- Phased rollout: dev → stage → prod
-
----
-
-## Refactoring Quick Reference
-
-### Common Refactoring Patterns
-
-#### Pattern 1: Count to For_Each Migration
-
-**When:** Need stable resource addressing or items might be reordered
-
-```bash
-# Step 1: Add for_each, keep count commented
-# Step 2: Add moved blocks for each resource
-# Step 3: Run terraform plan (should show "moved" not "destroy/create")
-# Step 4: Apply changes
-# Step 5: Remove commented count
-```
-
-**Key principle:** Use `moved` blocks to preserve existing resources
-
-#### Pattern 2: Legacy to Modern Terraform
-
-**0.12/0.13 → 1.x checklist:**
-
-- [ ] Replace `element(concat(...))` → `try()`
-- [ ] Add `nullable = false` where appropriate
-- [ ] Use `optional()` in object types (1.3+)
-- [ ] Add `validation` blocks
-- [ ] Migrate secrets to write-only arguments (1.11+)
-- [ ] Use `moved` blocks for refactoring (1.1+)
-- [ ] Add cross-variable validation (1.9+)
-
-#### Pattern 3: Secrets Remediation
-
-**Goal:** Move secrets out of Terraform state
-
-```bash
-# Step 1: Create secret in AWS Secrets Manager (outside Terraform)
-aws secretsmanager create-secret --name prod-db-password --secret-string "..."
-
-# Step 2: Update Terraform to use data sources
-# Step 3: Use write-only argument (Terraform 1.11+)
-# Step 4: Remove random_password resource or variable
-# Step 5: Apply and verify secret not in state
-terraform show | grep -i password  # Should not appear
-```
-
-### Refactoring Decision Tree
-
-```
-What are you refactoring?
-
-├─ Resource addressing (count[0] → for_each["key"])
-│  └─ Use: moved blocks + for_each conversion
-│
-├─ Secrets in state
-│  └─ Use: AWS Secrets Manager + write-only arguments (1.11+)
-│
-├─ Legacy Terraform syntax (0.12/0.13)
-│  └─ Use: Modern feature checklist above
-│
-└─ Module structure (rename, reorganize)
-   └─ Use: moved blocks to preserve resources
-```
-
-### Migration Best Practices
-
-**Before refactoring:**
-1. Backup state file
-2. Test in development first
-3. Review terraform plan carefully
-4. Document what changed and why
-
-**During refactoring:**
-1. One change at a time
-2. Verify each step with terraform plan
-3. Use moved blocks, not destroy/recreate
-4. Keep git history clean with logical commits
-
-**After refactoring:**
-1. Verify idempotency (plan shows no changes)
-2. Test in staging before production
-3. Update documentation
-4. Communicate changes to team
-
-**For detailed refactoring patterns, see:** [Code Patterns: Refactoring Patterns](code-patterns.md#refactoring-patterns)
+- [ ] Required labels applied (environment, project, managed-by, owner, cost-center)
+- [ ] No primitive IAM roles (Owner, Editor, Viewer)
+- [ ] No default network usage
+- [ ] No 0.0.0.0/0 in firewall source_ranges (unless intended)
+- [ ] CMEK encryption for sensitive data
+- [ ] Private IP for Cloud SQL
 
 ---
 
@@ -563,25 +539,25 @@ What are you refactoring?
 ### Resource Naming
 
 ```hcl
-# ✅ Good: Descriptive, contextual
-resource "aws_instance" "web_server" { }
-resource "aws_s3_bucket" "application_logs" { }
+# ✅ Good: Descriptive, contextual (GCP uses hyphens)
+resource "google_compute_instance" "web-server" { }
+resource "google_storage_bucket" "application-logs" { }
 
 # ❌ Bad: Generic
-resource "aws_instance" "main" { }
-resource "aws_s3_bucket" "bucket" { }
+resource "google_compute_instance" "main" { }
+resource "google_storage_bucket" "bucket" { }
 ```
 
 ### Variable Naming
 
 ```hcl
 # ✅ Good: Context-specific
-var.vpc_cidr_block
-var.database_instance_class
+var.vpc_cidr_range
+var.database_tier
 
 # ❌ Bad: Generic
 var.cidr
-var.instance_class
+var.tier
 ```
 
 ### File Organization
